@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Infrastructure.fs" />
+    <Compile Include="Rules.fs" />
+    <Compile Include="Parser.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
+    <PackageReference Include="Polly" Version="6.1.0" />
+    <PackageReference Include="Serilog" Version="2.7.2-dev-01024" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Newtonsoft.Json.Converters.FSharp\Newtonsoft.Json.Converters.FSharp.fsproj" />
+  </ItemGroup>
+
+</Project>
