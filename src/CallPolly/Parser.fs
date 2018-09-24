@@ -54,6 +54,9 @@ type [<Newtonsoft.Json.JsonConverter(typeof<Converters.UnionConverter>, "ruleNam
 type PolicyParseException(json, inner) =
     inherit exn(sprintf "Failed to parse Policy: '%s'" json, inner)
 
+type PolicyRecusiveIncludeException(policyName,alreadyIncluded, policies) =
+    inherit exn(sprintf "Include Rule '%s' refers recursively to '%s' (policies: %s)" policyName alreadyIncluded policies)
+
 type ActionMapParseException(msg, inner : exn) =
     inherit exn(msg, inner)
     static member FromJson (json, inner) = ActionMapParseException(sprintf "Failed to parse ActionMap: '%s'" json, inner)
@@ -61,16 +64,16 @@ type ActionMapParseException(msg, inner : exn) =
 type ActionMapParseMissingPolicyException(action, policy, policies) =
     inherit ActionMapParseException(sprintf "Rule for Action '%s' targets undefined Policy '%s' (policies: %s)" action policy policies, null)
 
-type PolicyMissingIncludedPolicyException(policyName, policy, policies) =
-    inherit ActionMapParseException(sprintf "Include Rule for Policy '%s' refers to undefined Policy '%s' (policies: %s)" policyName policy policies, null)
+type PolicyMissingIncludedPolicyException(stack, policyName, policies) =
+    inherit ActionMapParseException(sprintf "Include Rule for Policy '%s' refers to undefined Policy '%s' (policies: %s)" stack policyName policies, null)
 
 let parse policiesJson mapJson =
     let defs: Dictionary<string,ActionParameter[]> = try Newtonsoft.Deserialize policiesJson with e -> PolicyParseException(policiesJson, e) |> raise
     let dumpDefs () = sprintf "%A" [ for x in defs -> x.Key, List.ofArray x.Value ]
     let map: Dictionary<string,string> = try Newtonsoft.Deserialize mapJson with e -> ActionMapParseException.FromJson(mapJson, e) |> raise
     let (|TimeSpanMs|) ms = TimeSpan.FromMilliseconds(float ms)
-    let rec mapPolicy policyName polDefs =
-        let rec unroll (def : ActionParameter) : ActionRule seq = seq {
+    let rec mapPolicy stack polDefs =
+        let rec unroll stack (def : ActionParameter) : ActionRule seq = seq {
             match def with
             | ActionParameter.Isolate -> yield ActionRule.Isolate
             | ActionParameter.Uri(``base``=b; path=p) ->
@@ -88,24 +91,30 @@ let parse policiesJson mapJson =
                 // TODO capture name of unknown rule, log once (NB recomputed every 10s so can't log every time)
                 () // Ignore ruleNames we don't yet support (allows us to define rules only newer instances understand transparently)
             | ActionParameter.Include includedPolicyName ->
+                match stack |> List.tryFindIndex (fun x -> x=includedPolicyName) with
+                | None -> ()
+                | Some x when x = List.length stack - 1 -> ()
+                | _ -> raise <| PolicyRecusiveIncludeException(String.concat "->" (List.rev stack), includedPolicyName, dumpDefs ())
                 match defs.TryGetValue includedPolicyName with
-                | false, _ -> raise <| PolicyMissingIncludedPolicyException(includedPolicyName, policyName, dumpDefs ())
-                | true, defs -> yield! defs |> Seq.collect unroll }
-        polDefs |> Seq.collect unroll
+                | false, _ -> raise <| PolicyMissingIncludedPolicyException(String.concat "->" (List.rev stack), includedPolicyName, dumpDefs ())
+                | true, defs ->
+                    let stack' = includedPolicyName :: stack
+                    yield! defs |> Seq.collect (unroll stack') }
+        polDefs |> Seq.collect (unroll stack)
 
-    seq { for KeyValue (name,target) in map ->
-            match defs.TryGetValue target with
-            | false, _ -> raise <| ActionMapParseMissingPolicyException(name, target, dumpDefs ())
+    seq { for KeyValue (actionName,policyName) in map ->
+            match defs.TryGetValue policyName with
+            | false, _ -> raise <| ActionMapParseMissingPolicyException(actionName, policyName, dumpDefs ())
             | true, rules ->
-                name, mapPolicy target rules |> List.ofSeq }
+                actionName, policyName, mapPolicy [policyName; actionName] rules |> List.ofSeq }
 
-let parseUpstreamPolicyWithoutDefault makeKey pols map : UpstreamPolicyWithoutDefault =
+let parseUpstreamPolicyWithoutDefault log pols map : UpstreamPolicyWithoutDefault =
     let rulesMap = parse pols map
-    UpstreamPolicyWithoutDefault.Parse(makeKey, rulesMap)
+    UpstreamPolicyWithoutDefault.Parse(log, rulesMap)
 
-let parseUpstreamPolicy makeKey pols map : UpstreamPolicy =
+let parseUpstreamPolicy log pols map : UpstreamPolicy =
     let rulesMap = parse pols map
-    UpstreamPolicy.Parse(makeKey, rulesMap, defaultPolicyLabel)
+    UpstreamPolicy.Parse(log, rulesMap, defaultPolicyLabel)
 
 let updateFrom pols map (x : UpstreamPolicy) : (string * ChangeLevel) seq =
     let rulesMap = parse pols map

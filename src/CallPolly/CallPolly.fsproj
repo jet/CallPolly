@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <Compile Include="Infrastructure.fs" />
+    <Compile Include="Events.fs" />
     <Compile Include="Rules.fs" />
     <Compile Include="Parser.fs" />
   </ItemGroup>
