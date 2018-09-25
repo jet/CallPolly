@@ -23,10 +23,12 @@ module internal Log =
         lfe.Warning("Circuit Isolated for {actionName} based on {policy} policy", actionName, policyName)
     let actionBroken (log: Serilog.ILogger) policyName actionName limits =
         let lfe = log |> forEvent (Broken actionName)
-        lfe.Warning("Circuit Broken for {actionName} based on limits in {policy}: @{limits}", actionName, policyName, limits)
+        lfe.Warning("Circuit Broken for {actionName} based on limits in {policy}: {@limits}", actionName, policyName, limits)
 
     let breaking (exn: exn) (actionName: string) (timespan: TimeSpan) (log : Serilog.ILogger) =
-        log.Warning(exn, "Circuit Breaking for {actionName} for {duration}", actionName, timespan)
+        log.Warning(exn, "Circuit Breaking Activated for {actionName} for {duration}", actionName, timespan)
+    let breakingDryRun (exn: exn) (actionName: string) (timespan: TimeSpan) (log : Serilog.ILogger) =
+        log.Warning(exn, "Circuit Breaking DRYRUN for {actionName} for {duration}", actionName, timespan)
     let halfOpen (actionName: string) (log : Serilog.ILogger) =
         log.Information("Circuit Pending Reopen for {actionName}", actionName)
     let reset (actionName: string) (log : Serilog.ILogger) =

@@ -12,7 +12,7 @@ type LogMode =
     | Never
     | OnlyWhenDebugEnabled
 
-type BreakerConfig = { window: TimeSpan; minThroughput: int; errorRateThreshold: float; retryAfter: TimeSpan }
+type BreakerConfig = { window: TimeSpan; minThroughput: int; errorRateThreshold: float; retryAfter: TimeSpan; dryRun: bool }
 type PolicyConfig = { isolate: bool; breaker: BreakerConfig option }
 type CallConfiguration =
     {   timeout: TimeSpan option; sla: TimeSpan option
@@ -59,7 +59,11 @@ module ContextKeys =
 
 /// Translates a PolicyConfig's rules to a Polly IAsyncPolicy instance that gets held in the ActionPolicy
 let mkAsyncPolicy (log: Serilog.ILogger) (actionName : string) (config : PolicyConfig) : IAsyncPolicy option =
-    let logBreaking (exn : exn) (timespan: TimeSpan) = if not config.isolate then log |> Events.Log.breaking exn actionName timespan
+    let logBreaking (exn : exn) (timespan: TimeSpan) =
+        match config with
+        | { isolate = true } -> ()
+        | { breaker = Some { dryRun = true; retryAfter = t } } -> log |> Events.Log.breakingDryRun exn actionName t
+        | _ -> log |> Events.Log.breaking exn actionName timespan
     let logHalfOpen () = log |> Events.Log.halfOpen actionName
     let logReset () = log |> Events.Log.reset actionName
     let maybeCb : CircuitBreakerPolicy option =
@@ -82,10 +86,12 @@ let mkAsyncPolicy (log: Serilog.ILogger) (actionName : string) (config : PolicyC
                     failureThreshold = bc.errorRateThreshold,
                     samplingDuration = bc.window,
                     minimumThroughput = bc.minThroughput,
-                    durationOfBreak = bc.retryAfter,
+                    // using technique in https://github.com/App-vNext/Polly/issues/496#issuecomment-420183946 to trigger an inert break
+                    durationOfBreak = (if bc.dryRun then TimeSpan.Zero else bc.retryAfter),
                     onBreak = Action<_,_> logBreaking,
-                    onReset = Action logReset,
-                    onHalfOpen = logHalfOpen )
+                    // durationOfBreak above will cause a break to immediately be followed by a halfOpen and reset - we want to cut off those messages at source
+                    onReset = Action (if bc.dryRun then ignore else logReset),
+                    onHalfOpen = (if bc.dryRun then ignore else logHalfOpen) )
                 |> maybeIsolate config.isolate
             |> Some
     maybeCb |> Option.map (fun cb -> cb.WithPolicyKey(actionName) :> _)

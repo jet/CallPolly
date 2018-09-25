@@ -90,7 +90,7 @@ let s x = TimeSpan.FromSeconds (float x)
 let baseUri = Rules.ActionRule.BaseUri (Uri "http://base")
 
 let logRule = Rules.ActionRule.Log (Rules.LogMode.OnlyWhenDebugEnabled, Rules.LogMode.OnlyWhenDebugEnabled)
-let breakConfig : Rules.BreakerConfig = { window = s 5; minThroughput = 100; errorRateThreshold = 0.2; retryAfter = s 1 }
+let breakConfig : Rules.BreakerConfig = { window = s 5; minThroughput = 100; errorRateThreshold = 0.2; retryAfter = s 1; dryRun = false }
 let breakRule = Rules.ActionRule.Break breakConfig
 
 /// Base tests exercising core functionality
@@ -142,7 +142,7 @@ module SerilogExtractors =
         match logEvent.Properties.TryGetValue CallPolly.Events.Constants.EventPropertyName with
         | true, SerilogScalar (:? CallPolly.Events.Event as e) -> Some e
         | _ -> None
-    let (|Isolated|Broken|Pending|Resetting|Breaking|Other|) = function
+    let (|Isolated|Broken|Pending|Resetting|Breaking|BreakingDryRun|Other|) = function
         | CallPollyEvent (Events.Event.Isolated ePolicy)
             & HasProp "actionName" (SerilogString action)
             & HasProp "policy" (SerilogString policy)
@@ -155,7 +155,8 @@ module SerilogExtractors =
                 Broken (sprintf "%s %s" policy action)
         | TemplateContains "Pending Reopen" & HasProp "actionName" (SerilogString policy) -> Pending policy
         | TemplateContains "Reset" & HasProp "actionName" (SerilogString policy) -> Resetting policy
-        | TemplateContains "Circuit Breaking" & HasProp "actionName" (SerilogString policy) -> Breaking policy
+        | TemplateContains "Circuit Breaking Activated" & HasProp "actionName" (SerilogString policy) -> Breaking policy
+        | TemplateContains "Circuit Breaking DRYRUN" & HasProp "actionName" (SerilogString policy) -> BreakingDryRun policy
         | x -> Other (dumpEvent x)
 
 type SerilogHelpers.LogCaptureBuffer with
@@ -166,6 +167,7 @@ type SerilogHelpers.LogCaptureBuffer with
             | Pending a -> sprintf "Pending %s" a
             | Resetting a -> sprintf "Resetting %s" a
             | Breaking a -> sprintf "Breaking %s" a
+            | BreakingDryRun a -> sprintf "BreakingDryRun %s" a
             | Other m -> m
         let actual = [for x in buffer.Entries -> render x]
         buffer.Clear()
@@ -238,12 +240,14 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
           "windowS": 5,
           "minRequests": 2,
           "failPct": 50,
-          "breakS": .5
+          "breakS": .5,
+          "dryRun": false
         }
       ]
     }"""
+    let dryRunPols = pols.Replace("false","true")
 
-    let expectedRules : Rules.BreakerConfig = { window = s 5; minThroughput = 2; errorRateThreshold = 0.5; retryAfter = TimeSpan.FromSeconds 0.5 }
+    let expectedRules : Rules.BreakerConfig = { window = s 5; minThroughput = 2; errorRateThreshold = 0.5; retryAfter = TimeSpan.FromSeconds 0.5; dryRun = false }
 
     let map = """{
       "(default)": "default",
@@ -254,7 +258,7 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
         let ap = pol.Find "notFound"
         test <@ not ap.PolicyConfig.isolate
                 && Some expectedRules = ap.PolicyConfig.breaker @>
-        let executeCallYieldingTimeout = async {
+        let runTimeout = async {
             let timeout = async { return raise <| TimeoutException() }
             let! result = ap.Execute(timeout) |> Async.Catch
             test <@ match result with Choice2Of2 (:? TimeoutException) -> true | _ -> false @> }
@@ -268,17 +272,50 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
             let! result = ap.Execute(success)
             42 =! result }
         do! runSuccess
-        do! executeCallYieldingTimeout
+        do! runTimeout
         [sprintf "Breaking %s" "(default)"] =! buffer.Take()
         do! shouldBeOpen
         // Waiting for 1s should have transitioned it to HalfOpen
         do! Async.Sleep (s 1)
         do! runSuccess
         [sprintf "Pending %s" "(default)"; sprintf "Resetting %s" "(default)"] =! buffer.Take()
-        do! executeCallYieldingTimeout
+        do! runTimeout
         [sprintf "Breaking %s" "(default)"] =! buffer.Take()
         do! shouldBeOpen
         // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
         let changedRules = pols.Replace(".5","5")
         pol |> Parser.updateFrom changedRules map |> ignore
         do! shouldBeOpen }
+
+    let [<Fact>] ``dryRun mode prevents breaking, logs status changes appropriately`` () = async {
+        let pol = Parser.parseUpstreamPolicy log dryRunPols map
+        let ap = pol.Find "notFound"
+        test <@ not ap.PolicyConfig.isolate
+                && Some { expectedRules with dryRun = true } = ap.PolicyConfig.breaker @>
+        let runTimeout = async {
+            let timeout = async { return raise <| TimeoutException() }
+            let! result = ap.Execute(timeout) |> Async.Catch
+            test <@ match result with Choice2Of2 (:? TimeoutException) -> true | _ -> false @> }
+        let runSuccess = async {
+            let success = async { return 42 }
+            let! result = ap.Execute(success)
+            42 =! result }
+        do! runSuccess
+        do! runTimeout
+        // 1/2 running error rate -> would break
+        [sprintf "BreakingDryRun %s" "(default)"] =! buffer.Take()
+        do! runSuccess
+        do! runTimeout
+        // 2/4 failed -> would break
+        [sprintf "BreakingDryRun %s" "(default)"] =! buffer.Take()
+        do! runSuccess // 2/5 failed
+        do! runTimeout // 3/6 failed -> break
+        [sprintf "BreakingDryRun %s" "(default)"] =! buffer.Take()
+        // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
+        let changedRules = pols.Replace(".5","5")
+        pol |> Parser.updateFrom changedRules map |> ignore
+        do! runSuccess
+        do! runSuccess
+        // 1/2 failed (if the timeout happened in between the two successes, it would fail)
+        do! runTimeout
+        [] =! buffer.Take() }

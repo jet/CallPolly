@@ -46,7 +46,7 @@ type [<Newtonsoft.Json.JsonConverter(typeof<Converters.UnionConverter>, "ruleNam
     | Uri of ``base``: string option * path: string option
     | Sla of slaMs: int * timeoutMs: int
     | Log of req: LogAmount * res: LogAmount
-    | Break of windowS: int * minRequests: int * failPct: float * breakS: float
+    | Break of windowS: int * minRequests: int * failPct: float * breakS: float * dryRun: Nullable<bool>
     | Isolate
     /// Catch-all case when a ruleName is unknown (allows us to add new policies but have existing instances safely ignore it)
     | Unknown
@@ -81,12 +81,13 @@ let parse policiesJson mapJson =
                 match Option.toObj p with null -> () | p -> yield ActionRule.RelUri(Uri(p, UriKind.Relative))
             | ActionParameter.Sla(slaMs=TimeSpanMs sla; timeoutMs=TimeSpanMs timeout) -> yield ActionRule.Sla(sla,timeout)
             | ActionParameter.Log(req, res) -> yield ActionRule.Log(req.AsLogRule,res.AsLogRule)
-            | ActionParameter.Break(windowS, min, failPct, breakS) ->
+            | ActionParameter.Break(windowS, min, failPct, breakS, dryRun) ->
                 yield ActionRule.Break {
                     window = TimeSpan.FromSeconds (float windowS)
                     minThroughput = min
                     errorRateThreshold = failPct/100.
-                    retryAfter = TimeSpan.FromSeconds breakS }
+                    retryAfter = TimeSpan.FromSeconds breakS
+                    dryRun = if dryRun.HasValue then dryRun.Value else false }
             | ActionParameter.Unknown ->
                 // TODO capture name of unknown rule, log once (NB recomputed every 10s so can't log every time)
                 () // Ignore ruleNames we don't yet support (allows us to define rules only newer instances understand transparently)
