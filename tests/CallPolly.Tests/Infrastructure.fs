@@ -59,6 +59,9 @@ module SerilogHelpers =
         match e.Properties.TryGetValue name with
         | true, (SerilogScalar _ as s) -> Some s | _ -> None
         | _ -> None
+    let (|TemplateContains|_|) (substr : string) (e : LogEvent) =
+        if e.MessageTemplate.Text.Contains substr then Some ()
+        else None
     let (|SerilogString|_|) : LogEventPropertyValue -> string option = function SerilogScalar (:? string as y) -> Some y | _ -> None
     let (|SerilogBool|_|) : LogEventPropertyValue -> bool option = function SerilogScalar (:? bool as y) -> Some y | _ -> None
 

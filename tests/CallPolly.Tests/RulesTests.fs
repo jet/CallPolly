@@ -142,86 +142,94 @@ module SerilogExtractors =
         match logEvent.Properties.TryGetValue CallPolly.Events.Constants.EventPropertyName with
         | true, SerilogScalar (:? CallPolly.Events.Event as e) -> Some e
         | _ -> None
-    let (|Isolated|Other|) = function
+    let (|Isolated|Broken|Pending|Resetting|Breaking|Other|) = function
         | CallPollyEvent (Events.Event.Isolated ePolicy)
-            & HasProp "action" (SerilogString action)
+            & HasProp "actionName" (SerilogString action)
             & HasProp "policy" (SerilogString policy)
             when ePolicy = policy ->
-                Isolated (sprintf "Isolated %s %s" policy action)
-        | x -> Other x
+                Isolated (sprintf "%s %s" policy action)
+        | CallPollyEvent (Events.Event.Broken eAction)
+            & HasProp "actionName" (SerilogString action)
+            & HasProp "policy" (SerilogString policy)
+            when eAction = action ->
+                Broken (sprintf "%s %s" policy action)
+        | TemplateContains "Pending Reopen" & HasProp "actionName" (SerilogString policy) -> Pending policy
+        | TemplateContains "Reset" & HasProp "actionName" (SerilogString policy) -> Resetting policy
+        | TemplateContains "Circuit Breaking" & HasProp "actionName" (SerilogString policy) -> Breaking policy
+        | x -> Other (dumpEvent x)
 
 type SerilogHelpers.LogCaptureBuffer with
-    member buffer.VerifyActionIsolatedLogged policy action =
-        let expected, unexpected = Seq.map (|Isolated|Other|) buffer.Entries |> Choice.partition
-        test <@ let dumped = Array.map dumpEvent unexpected
-                [ sprintf "Isolated %s %s" policy action ] = List.ofArray expected
-                && Array.isEmpty dumped @>
+    member buffer.Take() =
+        let render = function
+            | Isolated m -> sprintf "Isolated %s" m
+            | Broken m -> sprintf "Broken %s" m
+            | Pending a -> sprintf "Pending %s" a
+            | Resetting a -> sprintf "Resetting %s" a
+            | Breaking a -> sprintf "Breaking %s" a
+            | Other m -> m
+        let actual = [for x in buffer.Entries -> render x]
         buffer.Clear()
-
-    member buffer.VerifyNothingLogged () = test <@ Seq.isEmpty <| Seq.map dumpEvent buffer.Entries @>
+        actual
 
 type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output
 
-    let pols = """{
-      "default": [
-        { "ruleName": "Isolate"  }
-      ]
-    }"""
-    let map = """{
-      "(default)": "default",
-      "nonDefault": "default"
-    }"""
-
-    let [<Fact>] ``When on, throws and logs information`` () = async {
+    let [<Fact>] ``takes precedence over, but does not conceal Break; logging only reflects Isolate rule`` () = async {
         let pol = Parser.parseUpstreamPolicy log pols map
-        let actionName = "exampleAction"
-        let ap = pol.Find actionName
-        test <@ ap.PolicyConfig.isolate && None = ap.PolicyConfig.breaker @>
-        let call = async { return 42 }
-        let! result = ap.Execute(actionName,call) |> Async.Catch
-        test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
-        buffer.VerifyActionIsolatedLogged "default" actionName }
-
-    let [<Fact>] ``when removed, stops intercepting processing, does not log`` () = async {
-        let pol = Parser.parseUpstreamPolicy log pols map
-        let actionName = "nonDefault"
-        let ap = pol.Find actionName
-        test <@ ap.PolicyConfig.isolate && None = ap.PolicyConfig.breaker @>
-        let call = async { return 42 }
-        let! result = ap.Execute(actionName, call) |> Async.Catch
-        test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
-        buffer.VerifyActionIsolatedLogged "default" actionName
-        let updated =
-            let polsWithIsolateMangled = pols.Replace("Isolate","isolate")
-            pol |> Parser.updateFrom polsWithIsolateMangled map |> List.ofSeq
-        test <@ updated |> List.contains ("(default)",Rules.ChangeLevel.ConfigAndPolicy)
-                && not ap.PolicyConfig.isolate @>
-        let! result = ap.Execute(actionName, call) |> Async.Catch
-        test <@ Choice1Of2 42 = result @>
-        buffer.VerifyNothingLogged() }
-
-type Break(output : Xunit.Abstractions.ITestOutputHelper) =
-    let log, buffer = LogHooks.createLoggerWithCapture output
-
-    let [<Fact>] ``Isolate facility takes precedence over, but does not conceal Break; logging only reflects Isolate rule`` () = async {
-        let pol = Parser.parseUpstreamPolicy log pols map
-        let actionName = "placeOrder"
-        let ap = pol.Find actionName
+        let ap = pol.Find "placeOrder"
         test <@ ap.PolicyConfig.isolate
                 && Some breakConfig = ap.PolicyConfig.breaker @>
         let call = async { return 42 }
-        let! result = ap.Execute(actionName, call) |> Async.Catch
+        let! result = ap.Execute(call) |> Async.Catch
         test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
-        buffer.VerifyActionIsolatedLogged "heavy" actionName
+        ["Isolated heavy placeOrder"] =! buffer.Take()
         let updated =
             let polsWithIsolateMangled = pols.Replace("Isolate","isolate")
             pol |> Parser.updateFrom polsWithIsolateMangled map |> List.ofSeq
         test <@ updated |> List.contains ("placeOrder",Rules.ChangeLevel.ConfigAndPolicy)
                 && not ap.PolicyConfig.isolate @>
-        let! result = ap.Execute(actionName, call) |> Async.Catch
+        let! result = ap.Execute(call) |> Async.Catch
         test <@ Choice1Of2 42 = result @>
-        buffer.VerifyNothingLogged() }
+        [] =! buffer.Take() }
+
+    let isolatePols = """{
+      "default": [
+        { "ruleName": "Isolate"  }
+      ]
+    }"""
+    let isolateMap = """{
+      "(default)": "default",
+      "nonDefault": "default"
+    }"""
+
+    let [<Fact>] ``When on, throws and logs information`` () = async {
+        let pol = Parser.parseUpstreamPolicy log isolatePols isolateMap
+        let ap = pol.Find "notFound"
+        test <@ ap.PolicyConfig.isolate && None = ap.PolicyConfig.breaker @>
+        let call = async { return 42 }
+        let! result = ap.Execute(call) |> Async.Catch
+        test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
+        [sprintf "Isolated default %s" "(default)"] =! buffer.Take() }
+
+    let [<Fact>] ``when removed, stops intercepting processing, does not log`` () = async {
+        let pol = Parser.parseUpstreamPolicy log isolatePols isolateMap
+        let ap = pol.Find "nonDefault"
+        test <@ ap.PolicyConfig.isolate && None = ap.PolicyConfig.breaker @>
+        let call = async { return 42 }
+        let! result = ap.Execute(call) |> Async.Catch
+        test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
+        ["Isolated default nonDefault"] =! buffer.Take()
+        let updated =
+            let polsWithIsolateMangled = isolatePols.Replace("Isolate","isolate")
+            pol |> Parser.updateFrom polsWithIsolateMangled isolateMap |> List.ofSeq
+        test <@ updated |> List.contains ("(default)",Rules.ChangeLevel.ConfigAndPolicy)
+                && not ap.PolicyConfig.isolate @>
+        let! result = ap.Execute(call) |> Async.Catch
+        test <@ Choice1Of2 42 = result @>
+        [] =! buffer.Take() }
+
+type Break(output : Xunit.Abstractions.ITestOutputHelper) =
+    let log, buffer = LogHooks.createLoggerWithCapture output
 
     let pols = """{
       "default": [
@@ -241,30 +249,34 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
       "(default)": "default",
     }"""
 
-    let [<Fact>] ``applies break constraints`` () = async {
+    let [<Fact>] ``applies break constraints, logging each application and status changes appropriately`` () = async {
         let pol = Parser.parseUpstreamPolicy log pols map
-        let ap = pol.Find "any"
+        let ap = pol.Find "notFound"
         test <@ not ap.PolicyConfig.isolate
                 && Some expectedRules = ap.PolicyConfig.breaker @>
         let executeCallYieldingTimeout = async {
             let timeout = async { return raise <| TimeoutException() }
-            let! result = ap.Execute("action",timeout) |> Async.Catch
+            let! result = ap.Execute(timeout) |> Async.Catch
             test <@ match result with Choice2Of2 (:? TimeoutException) -> true | _ -> false @> }
         let shouldBeOpen = async {
             let fail = async { return failwith "Unexpected" }
-            let! result = ap.Execute("action",fail) |> Async.Catch
-            test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.BrokenCircuitException) -> true | _ -> false @> }
+            let! result = ap.Execute(fail) |> Async.Catch
+            test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.BrokenCircuitException) -> true | _ -> false @>
+            [sprintf "Broken default %s" "(default)"] =! buffer.Take() }
         let runSuccess = async {
             let success = async { return 42 }
-            let! result = ap.Execute("action",success)
+            let! result = ap.Execute(success)
             42 =! result }
         do! runSuccess
         do! executeCallYieldingTimeout
+        [sprintf "Breaking %s" "(default)"] =! buffer.Take()
         do! shouldBeOpen
         // Waiting for 1s should have transitioned it to HalfOpen
         do! Async.Sleep (s 1)
         do! runSuccess
+        [sprintf "Pending %s" "(default)"; sprintf "Resetting %s" "(default)"] =! buffer.Take()
         do! executeCallYieldingTimeout
+        [sprintf "Breaking %s" "(default)"] =! buffer.Take()
         do! shouldBeOpen
         // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
         let changedRules = pols.Replace(".5","5")

@@ -58,14 +58,10 @@ module ContextKeys =
     let [<Literal>] action = "action"
 
 /// Translates a PolicyConfig's rules to a Polly IAsyncPolicy instance that gets held in the ActionPolicy
-let mkAsyncPolicy (log: Serilog.ILogger) (policy : string) (config : PolicyConfig) : IAsyncPolicy option =
-    let logBreak (exn : exn) (timespan: TimeSpan) (_context: Context) =
-        ()
-        //log.Warning(exn, "Circuit Breaking for {policy} for {duration}", policy, timespan)
-    let logReset (_context : Context) =
-        log.Information("Circuit Reset for {policy}", policy)
-    let logHalfOpen () =
-        log.Information("Circuit Pending Reopen for {policy}", policy)
+let mkAsyncPolicy (log: Serilog.ILogger) (actionName : string) (config : PolicyConfig) : IAsyncPolicy option =
+    let logBreaking (exn : exn) (timespan: TimeSpan) = if not config.isolate then log |> Events.Log.breaking exn actionName timespan
+    let logHalfOpen () = log |> Events.Log.halfOpen actionName
+    let logReset () = log |> Events.Log.reset actionName
     let maybeCb : CircuitBreakerPolicy option =
         let maybeIsolate isolate (cb : CircuitBreakerPolicy) =
             if isolate then cb.Isolate() else ()
@@ -87,25 +83,27 @@ let mkAsyncPolicy (log: Serilog.ILogger) (policy : string) (config : PolicyConfi
                     samplingDuration = bc.window,
                     minimumThroughput = bc.minThroughput,
                     durationOfBreak = bc.retryAfter,
-                    onBreak = Action<_,_,_> logBreak,
-                    onReset = Action<_>(logReset),
+                    onBreak = Action<_,_> logBreaking,
+                    onReset = Action logReset,
                     onHalfOpen = logHalfOpen )
                 |> maybeIsolate config.isolate
             |> Some
-    maybeCb |> Option.map (fun cb -> cb.WithPolicyKey(policy) :> _)
+    maybeCb |> Option.map (fun cb -> cb.WithPolicyKey(actionName) :> _)
 
 type [<RequireQualifiedAccess>] ChangeLevel = Added |  CallConfigurationOnly | ConfigAndPolicy
-type ActionPolicy(log, policyName, actionRules) =
+type ActionPolicy(log, actionName, policyName, actionRules) =
     let mutable actionRules = actionRules
     let mutable policyConfig = inferPolicy actionRules
     let mutable maybePolly : IAsyncPolicy option = None
     let applyPolicyConfig newConfig =
         policyConfig <- newConfig
-        maybePolly <- mkAsyncPolicy log policyName policyConfig
+        maybePolly <- mkAsyncPolicy log actionName policyConfig
     do applyPolicyConfig policyConfig
     /// This Exception filter is intended to perform logging as a side-effect without entering a catch and/or having to be re-raised, hence wierd impl
-    let (|LogWhenIsolatedFilter|_|) actionName = function
-        | _ when policyConfig.isolate -> Events.Log.actionIsolated log policyName actionName; None
+    let (|LogWhenIsolatedFilter|_|) (ex : exn) =
+        match ex with
+        | :? Polly.CircuitBreaker.IsolatedCircuitException -> Events.Log.actionIsolated log policyName actionName; None
+        | :? Polly.CircuitBreaker.BrokenCircuitException -> Events.Log.actionBroken log policyName actionName policyConfig.breaker.Value; None
         | _ when true -> None
         | _ -> invalidOp "not possible"; Some () // Compiler gets too clever if we never return Some
 
@@ -124,7 +122,7 @@ type ActionPolicy(log, policyName, actionRules) =
             | newPol ->
                 applyPolicyConfig newPol
                 Some ChangeLevel.ConfigAndPolicy
-    member __.Execute(actionName : string, inner : Async<'t>) =
+    member __.Execute(inner : Async<'t>) =
         match maybePolly with
         | None -> inner
         | Some polly -> async {
@@ -132,10 +130,10 @@ type ActionPolicy(log, policyName, actionRules) =
             let startInnerTask _ctx = Async.StartAsTask(inner, cancellationToken=ct)
             // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated
             try return! polly.ExecuteAsync startInnerTask |> Async.AwaitTaskCorrect
-            with (LogWhenIsolatedFilter actionName) -> return! invalidOp "not possible; Filter always returns None" }
+            with LogWhenIsolatedFilter -> return! invalidOp "not possible; Filter always returns None" }
 
 type UpstreamPolicyWithoutDefault private(log : Serilog.ILogger, map: ConcurrentDictionary<string,ActionPolicy>) =
-    static let mkActionPolicy log policyName rules = ActionPolicy(log, policyName, rules)
+    static let mkActionPolicy log actionName policyName rules = ActionPolicy(log, actionName, policyName, rules)
 
     /// Searches for the Policy associated with Action name`
     member __.TryFind actionName : ActionPolicy option =
@@ -148,7 +146,7 @@ type UpstreamPolicyWithoutDefault private(log : Serilog.ILogger, map: Concurrent
     /// - Map: the mappings of Action names to items in the Policies, defined by the json in `mapJson`
     /// Throws if policiesJson or mapJson fail to adhere to correct Json structure
     static member Parse(log, rulesMap : (string * string * ActionRule list) seq) =
-        let inputs = seq { for actionName, policyName, rules in rulesMap -> KeyValuePair(actionName, mkActionPolicy log policyName rules) }
+        let inputs = seq { for actionName, policyName, rules in rulesMap -> KeyValuePair(actionName, mkActionPolicy log actionName policyName rules) }
         UpstreamPolicyWithoutDefault(log, ConcurrentDictionary inputs)
 
     /// Processes as per Parse, but updates an existing ruleset, annotating any detected changes
@@ -158,7 +156,7 @@ type UpstreamPolicyWithoutDefault private(log : Serilog.ILogger, map: Concurrent
                 let mutable changeLevel = None
                 let add policyName =
                     changeLevel <- Some ChangeLevel.Added
-                    mkActionPolicy log policyName rules
+                    mkActionPolicy log actionName policyName rules
                 let tryUpdate (current : ActionPolicy) =
                     changeLevel <- current.TryUpdateFrom rules
                     current
@@ -173,8 +171,8 @@ type UpstreamPolicyWithoutDefault private(log : Serilog.ILogger, map: Concurrent
 type UpstreamPolicy private(inner: UpstreamPolicyWithoutDefault, defaultPolicy: ActionPolicy) =
     /// Determines the Rules to be applied for the Action `name`
     /// Throws InvalidOperationException if no rule found for `name` and no mapping provided for a `(default)` action
-    member __.Find actionName : ActionPolicy =
-        match inner.TryFind actionName with
+    member __.Find action : ActionPolicy =
+        match inner.TryFind action with
         | Some actionPolicy -> actionPolicy
         | None -> defaultPolicy
 

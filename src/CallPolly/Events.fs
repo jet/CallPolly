@@ -1,10 +1,13 @@
 ﻿module CallPolly.Events
 
+open System
+
 module Constants =
     let [<Literal>] EventPropertyName = "cp"
 
 type Event =
     | Isolated of policy: string
+    | Broken of action: string
 
 module internal Log =
     open Serilog.Events
@@ -17,4 +20,14 @@ module internal Log =
 
     let actionIsolated (log: Serilog.ILogger) policyName actionName =
         let lfe = log |> forEvent (Isolated policyName)
-        lfe.Information("Circuit Isolated for {action} based on {policy} policy", actionName, policyName)
+        lfe.Warning("Circuit Isolated for {actionName} based on {policy} policy", actionName, policyName)
+    let actionBroken (log: Serilog.ILogger) policyName actionName limits =
+        let lfe = log |> forEvent (Broken actionName)
+        lfe.Warning("Circuit Broken for {actionName} based on limits in {policy}: @{limits}", actionName, policyName, limits)
+
+    let breaking (exn: exn) (actionName: string) (timespan: TimeSpan) (log : Serilog.ILogger) =
+        log.Warning(exn, "Circuit Breaking for {actionName} for {duration}", actionName, timespan)
+    let halfOpen (actionName: string) (log : Serilog.ILogger) =
+        log.Information("Circuit Pending Reopen for {actionName}", actionName)
+    let reset (actionName: string) (log : Serilog.ILogger) =
+        log.Information("Circuit Reset for {actionName}", actionName)
