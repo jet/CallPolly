@@ -37,3 +37,17 @@ module internal Log =
         log.Information("Circuit Pending Reopen for {actionName}", actionName)
     let reset (actionName: string) (log : Serilog.ILogger) =
         log.Information("Circuit Reset for {actionName}", actionName)
+
+    (* Bulkhead queuing and rejections *)
+
+    // NB this is not guaranteed to reflect actual queueing
+    // - in some cases, queueing may not take place
+    // - in others, the call will eventually fall victim to shedding
+    let queuing (actionName: string) (log : Serilog.ILogger) =
+        log.Information("Bulkhead Queuing likely for {actionName}", actionName)
+    let shedding (actionName: string) (log : Serilog.ILogger) =
+        log.Warning("Bulkhead Shedding for {actionName}", actionName)
+    let queuingDryRun (actionName: string) (log : Serilog.ILogger) =
+        log.Information("Bulkhead DRYRUN Queuing for {actionName}", actionName)
+    let sheddingDryRun (actionName: string) (log : Serilog.ILogger) =
+        log.Warning("Bulkhead DRYRUN Shedding for {actionName}", actionName)

@@ -47,6 +47,7 @@ type [<Newtonsoft.Json.JsonConverter(typeof<Converters.UnionConverter>, "ruleNam
     | Sla of slaMs: int * timeoutMs: int
     | Log of req: LogAmount * res: LogAmount
     | Break of windowS: int * minRequests: int * failPct: float * breakS: float * dryRun: Nullable<bool>
+    | Limit of maxParallel: int * maxQueue: int * dryRun: Nullable<bool>
     | Isolate
     /// Catch-all case when a ruleName is unknown (allows us to add new policies but have existing instances safely ignore it)
     | Unknown
@@ -87,6 +88,11 @@ let parse policiesJson mapJson =
                     minThroughput = min
                     errorRateThreshold = failPct/100.
                     retryAfter = TimeSpan.FromSeconds breakS
+                    dryRun = if dryRun.HasValue then dryRun.Value else false }
+            | ActionParameter.Limit(maxParallel=dop; maxQueue=queue; dryRun=dryRun) ->
+                yield ActionRule.Limit {
+                    dop = dop
+                    queue = queue
                     dryRun = if dryRun.HasValue then dryRun.Value else false }
             | ActionParameter.Unknown ->
                 // TODO capture name of unknown rule, log once (NB recomputed every 10s so can't log every time)

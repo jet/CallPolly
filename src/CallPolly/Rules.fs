@@ -4,6 +4,7 @@ open Polly
 open System
 open System.Collections.Generic
 open System.Collections.Concurrent
+open System.Threading.Tasks
 
 [<RequireQualifiedAccess>]
 type LogMode =
@@ -12,7 +13,8 @@ type LogMode =
     | OnlyWhenDebugEnabled
 
 type BreakerConfig = { window: TimeSpan; minThroughput: int; errorRateThreshold: float; retryAfter: TimeSpan; dryRun: bool }
-type PolicyConfig = { isolate: bool; breaker: BreakerConfig option }
+type BulkheadConfig = { dop: int; queue: int; dryRun: bool }
+type PolicyConfig = { isolate: bool; limit: BulkheadConfig option; breaker: BreakerConfig option }
 type CallConfiguration =
     {   timeout: TimeSpan option; sla: TimeSpan option
         ``base``: Uri option; rel: Uri option
@@ -25,15 +27,17 @@ type ActionRule =
     | Sla of sla: TimeSpan * timeout: TimeSpan
     | Log of req: LogMode * res: LogMode
     | Break of BreakerConfig
+    | Limit of BulkheadConfig
     | Isolate
 
 let inferPolicy : ActionRule seq -> PolicyConfig =
     let folder s = function
         | ActionRule.Isolate -> { s with isolate = true }
         | ActionRule.Break breakerConfig -> { s with breaker = Some breakerConfig }
+        | ActionRule.Limit bulkheadConfig -> { s with limit = Some bulkheadConfig }
         // Covered by inferConfig
         | ActionRule.BaseUri _ | ActionRule.RelUri _ | ActionRule.Sla _ | ActionRule.Log _ -> s
-    Seq.fold folder { isolate = false; breaker = None }
+    Seq.fold folder { isolate = false; limit = None; breaker = None }
 let inferConfig xs: CallConfiguration * Uri option =
     let folder s = function
         | ActionRule.BaseUri uri -> { s with ``base`` = Some uri }
@@ -41,7 +45,7 @@ let inferConfig xs: CallConfiguration * Uri option =
         | ActionRule.Sla (sla=sla; timeout=t) -> { s with sla = Some sla; timeout = Some t }
         | ActionRule.Log (req=reqLevel; res=resLevel) -> { s with reqLog = reqLevel; resLog = resLevel }
         // Covered by inferPolicy
-        | ActionRule.Isolate | ActionRule.Break _ -> s
+        | ActionRule.Isolate | ActionRule.Limit _ | ActionRule.Break _ -> s
     let def =
         {   reqLog = LogMode.Never; resLog = LogMode.Never
             timeout = None; sla = None
@@ -65,6 +69,10 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
         | _ -> log |> Events.Log.breaking exn actionName timespan
     let logHalfOpen () = log |> Events.Log.halfOpen actionName
     let logReset () = log |> Events.Log.reset actionName
+    let logQueuing() = log |> Events.Log.queuing actionName
+    let logShedding () = log |> Events.Log.shedding actionName
+    let logSheddingDryRun () = log |> Events.Log.sheddingDryRun actionName
+    let logQueuingDryRun () = log |> Events.Log.queuingDryRun actionName
     let maybeCb : CircuitBreaker.CircuitBreakerPolicy option =
         let maybeIsolate isolate (cb : CircuitBreaker.CircuitBreakerPolicy) =
             if isolate then cb.Isolate() else ()
@@ -93,10 +101,21 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
                     onHalfOpen = (if bc.dryRun then ignore else logHalfOpen) )
                 |> maybeIsolate config.isolate
             |> Some
-    let asyncPolicy : IAsyncPolicy option =
-        match maybeCb with
-        | Some cb -> cb :> IAsyncPolicy |> Some
+    let maybeBulkhead : Bulkhead.BulkheadPolicy option =
+        match config.limit with
         | None -> None
+        | Some limit ->
+
+        let logRejection (_: Context) : Task = logShedding () ; Task.CompletedTask
+        let effectiveLimit = if limit.dryRun then Int32.MaxValue else limit.dop // https://github.com/App-vNext/Polly/issues/496#issuecomment-420183946
+        let bhp = Policy.BulkheadAsync(maxParallelization = effectiveLimit, maxQueuingActions = limit.queue, onBulkheadRejectedAsync = logRejection)
+        Some bhp
+    let asyncPolicy : IAsyncPolicy option =
+        match maybeBulkhead, maybeCb with
+        | Some bh, Some cb -> Policy.WrapAsync(bh, cb) :> IAsyncPolicy |> Some
+        | Some bh, None -> bh :> IAsyncPolicy |> Some
+        | None, Some cb -> cb :> IAsyncPolicy |> Some
+        | None, None -> None
     /// This Exception filter is intended to perform logging as a side-effect without entering a catch and/or having to be re-raised, hence wierd impl
     let (|LogWhenIsolatedFilter|_|) (ex : exn) =
         match ex with
@@ -109,8 +128,29 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
         match asyncPolicy with
         | None -> inner
         | Some polly -> async {
+            let mutable wasFull = false
+            // NB This logging is on a best-effort basis - obviously the guard here has an implied race condition
+            // queing might not be needed and/or the request might instead be shed
+            match config, maybeBulkhead with
+            | { limit = Some { dryRun = false } }, Some bh ->
+                if bh.BulkheadAvailableCount = 0 && bh.QueueAvailableCount <> 0 then
+                    logQueuing ()
+            // As we'll be let straight through unencumbered in dryRun mode, but might be in a race to start, note whether queuing was aleady in effect
+            | { limit = Some ({ dryRun = true } as limit) }, Some bh ->
+                let activeCount = Int32.MaxValue - bh.BulkheadAvailableCount
+                if activeCount > limit.dop then wasFull <- true
+            | _ -> ()
+
             let! ct = Async.CancellationToken
             let startInnerTask _ctx =
+                // As we'll be let straight through unencumbered in dryRun mode, we do the checks at the point where we're being scheduled to run in order to reduce false positives
+                match config, maybeBulkhead with
+                | { limit = Some ({ dryRun = true } as limit) }, Some bh ->
+                    let activeCount = Int32.MaxValue - bh.BulkheadAvailableCount
+                    if activeCount > limit.dop + limit.queue then logSheddingDryRun ()
+                    elif activeCount > limit.dop && wasFull then logQueuingDryRun ()
+                | _ -> ()
+
                 Async.StartAsTask(inner, cancellationToken=ct)
             // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated
             try return! polly.ExecuteAsync startInnerTask |> Async.AwaitTaskCorrect
