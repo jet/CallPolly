@@ -1,7 +1,6 @@
 ﻿module CallPolly.Rules
 
 open Polly
-open Polly.CircuitBreaker
 open System
 open System.Collections.Generic
 open System.Collections.Concurrent
@@ -58,7 +57,7 @@ module ContextKeys =
     let [<Literal>] action = "action"
 
 /// Translates a PolicyConfig's rules to a Polly IAsyncPolicy instance that gets held in the ActionPolicy
-let mkAsyncPolicy (log: Serilog.ILogger) (actionName : string) (config : PolicyConfig) : IAsyncPolicy option =
+type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: string, config : PolicyConfig) =
     let logBreaking (exn : exn) (timespan: TimeSpan) =
         match config with
         | { isolate = true } -> ()
@@ -66,8 +65,8 @@ let mkAsyncPolicy (log: Serilog.ILogger) (actionName : string) (config : PolicyC
         | _ -> log |> Events.Log.breaking exn actionName timespan
     let logHalfOpen () = log |> Events.Log.halfOpen actionName
     let logReset () = log |> Events.Log.reset actionName
-    let maybeCb : CircuitBreakerPolicy option =
-        let maybeIsolate isolate (cb : CircuitBreakerPolicy) =
+    let maybeCb : CircuitBreaker.CircuitBreakerPolicy option =
+        let maybeIsolate isolate (cb : CircuitBreaker.CircuitBreakerPolicy) =
             if isolate then cb.Isolate() else ()
             cb
         match config.breaker with
@@ -94,24 +93,38 @@ let mkAsyncPolicy (log: Serilog.ILogger) (actionName : string) (config : PolicyC
                     onHalfOpen = (if bc.dryRun then ignore else logHalfOpen) )
                 |> maybeIsolate config.isolate
             |> Some
-    maybeCb |> Option.map (fun cb -> cb.WithPolicyKey(actionName) :> _)
-
-type [<RequireQualifiedAccess>] ChangeLevel = Added |  CallConfigurationOnly | ConfigAndPolicy
-type ActionPolicy(log, actionName, policyName, actionRules) =
-    let mutable actionRules = actionRules
-    let mutable policyConfig = inferPolicy actionRules
-    let mutable maybePolly : IAsyncPolicy option = None
-    let applyPolicyConfig newConfig =
-        policyConfig <- newConfig
-        maybePolly <- mkAsyncPolicy log actionName policyConfig
-    do applyPolicyConfig policyConfig
+    let asyncPolicy : IAsyncPolicy option =
+        match maybeCb with
+        | Some cb -> cb :> IAsyncPolicy |> Some
+        | None -> None
     /// This Exception filter is intended to perform logging as a side-effect without entering a catch and/or having to be re-raised, hence wierd impl
     let (|LogWhenIsolatedFilter|_|) (ex : exn) =
         match ex with
         | :? Polly.CircuitBreaker.IsolatedCircuitException -> Events.Log.actionIsolated log policyName actionName; None
-        | :? Polly.CircuitBreaker.BrokenCircuitException -> Events.Log.actionBroken log policyName actionName policyConfig.breaker.Value; None
+        | :? Polly.CircuitBreaker.BrokenCircuitException -> Events.Log.actionBroken log policyName actionName config.breaker.Value; None
         | _ when true -> None
         | _ -> invalidOp "not possible"; Some () // Compiler gets too clever if we never return Some
+    /// Execute and/or an invocation of a function with the relevant policy applied
+    member __.Execute(inner : Async<'a>) : Async<'a> =
+        match asyncPolicy with
+        | None -> inner
+        | Some polly -> async {
+            let! ct = Async.CancellationToken
+            let startInnerTask _ctx =
+                Async.StartAsTask(inner, cancellationToken=ct)
+            // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated
+            try return! polly.ExecuteAsync startInnerTask |> Async.AwaitTaskCorrect
+            with LogWhenIsolatedFilter -> return! invalidOp "not possible; Filter always returns None" }
+
+type [<RequireQualifiedAccess>] ChangeLevel = Added |  CallConfigurationOnly | ConfigAndPolicy
+type ActionPolicy(log, actionName, policyName, actionRules) =
+    let makePolicyConfig rules = inferPolicy rules
+    let mutable actionRules, policyConfig = actionRules, makePolicyConfig actionRules
+    let makeGoverner () = ActionGovernor(log,  actionName, policyName, policyConfig)
+    let mutable governor : ActionGovernor = makeGoverner()
+    let updateConfig newConfig =
+        policyConfig <- newConfig
+        governor <- makeGoverner()
 
     member __.ActionRules = actionRules
     member __.PolicyConfig : PolicyConfig = policyConfig
@@ -122,21 +135,14 @@ type ActionPolicy(log, actionName, policyName, actionRules) =
             None
         else
             actionRules <- rules
-            match inferPolicy rules with
+            match makePolicyConfig rules with
             | newPol when newPol = policyConfig ->
                 Some ChangeLevel.CallConfigurationOnly
             | newPol ->
-                applyPolicyConfig newPol
+                updateConfig newPol
                 Some ChangeLevel.ConfigAndPolicy
     member __.Execute(inner : Async<'t>) =
-        match maybePolly with
-        | None -> inner
-        | Some polly -> async {
-            let! ct = Async.CancellationToken
-            let startInnerTask _ctx = Async.StartAsTask(inner, cancellationToken=ct)
-            // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated
-            try return! polly.ExecuteAsync startInnerTask |> Async.AwaitTaskCorrect
-            with LogWhenIsolatedFilter -> return! invalidOp "not possible; Filter always returns None" }
+       governor.Execute inner
 
 type UpstreamPolicyWithoutDefault private(log : Serilog.ILogger, map: ConcurrentDictionary<string,ActionPolicy>) =
     static let mkActionPolicy log actionName policyName rules = ActionPolicy(log, actionName, policyName, rules)

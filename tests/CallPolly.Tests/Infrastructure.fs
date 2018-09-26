@@ -2,9 +2,39 @@
 module CallPolly.Infrastructure
 
 open System
+open System.Diagnostics
 
 type Async with
     static member Sleep(x : TimeSpan) = Async.Sleep(int x.TotalMilliseconds)
+
+type TimeSpan with
+    /// Converts a tick count as measured by stopwatch into a TimeSpan value
+    static member FromStopwatchTicks(ticks : int64) =
+        let ticksPerSecond = double Stopwatch.Frequency
+        let totalSeconds = double ticks / ticksPerSecond
+        TimeSpan.FromSeconds totalSeconds
+
+/// Represents a time measurement of a computation that includes stopwatch tick metadata
+[<NoEquality; NoComparison>]
+type StopwatchInterval (startTicks : int64, endTicks : int64) =
+    do if startTicks < 0L || startTicks > endTicks then invalidArg "ticks" "tick arguments do not form a valid interval."
+    member __.StartTicks = startTicks
+    member __.EndTicks = endTicks
+    member __.Elapsed = TimeSpan.FromStopwatchTicks(endTicks - startTicks)
+
+type Stopwatch =
+    /// <summary>
+    ///     Times an async computation, returning the result with a time range measurement.
+    /// </summary>
+    /// <param name="f">Function to execute & time.</param>
+    [<DebuggerStepThrough>]
+    static member Time(f : Async<'T>) : Async<StopwatchInterval * 'T> = async {
+        let startTicks = System.Diagnostics.Stopwatch.GetTimestamp()
+        let! result = f
+        let endTicks = System.Diagnostics.Stopwatch.GetTimestamp()
+        let tr = StopwatchInterval(startTicks, endTicks)
+        return tr, result
+    }
 
 [<RequireQualifiedAccess>]
 module Choice =
@@ -16,6 +46,15 @@ module Choice =
             | Choice1Of2 l -> left.Add l
             | Choice2Of2 r -> right.Add r
         left.ToArray(), right.ToArray()
+    /// Splits a set of inputs into Choice1Of2 / Choice2Of2
+    let partition3 (inputs : seq<Choice<'Left,'Middle,'Right>>) =
+        let left, middle, right = ResizeArray(), ResizeArray(), ResizeArray()
+        for i in inputs do
+            match i with
+            | Choice1Of3 l -> left.Add l
+            | Choice2Of3 m -> middle.Add m
+            | Choice3Of3 r -> right.Add r
+        left.ToArray(), middle.ToArray(), right.ToArray()
 
 [<AutoOpen>]
 module SerilogHelpers =
