@@ -116,6 +116,7 @@ module SerilogExtractors =
     type LogEvent =
         | Isolated of policy: string * action: string
         | Broken of policy: string * action: string
+        | Deferred of policy: string * action: string * interval: TimeSpan
         | Status of string * StatusEvent
         | Call of string * CallEvent
         | Other of string
@@ -130,6 +131,11 @@ module SerilogExtractors =
             & HasProp "policy" (SerilogString policy)
             when eAction = action ->
                 Broken (policy, action)
+        | CallPollyEvent (Events.Event.Deferred (eAction,eInterval))
+            & HasProp "actionName" (SerilogString action)
+            & HasProp "policy" (SerilogString policy)
+            when eAction = action ->
+                Deferred (policy, action, eInterval.Elapsed)
         | TemplateContains "Pending Reopen" & HasProp "actionName" (SerilogString an) -> Status(an, Pending)
         | TemplateContains "Reset" & HasProp "actionName" (SerilogString an) -> Status(an, Resetting)
         | TemplateContains "Circuit Breaking " & HasProp "actionName" (SerilogString an) -> Call(an, Breaking)
@@ -367,9 +373,13 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
                 && match Seq.exactlyOne errs with :? Polly.Bulkhead.BulkheadRejectedException -> true | _ -> false @>
         let evnts = buffer.Take()
         let queuedOrShed = function
-            | Call ("(default)",MaybeQueuing) as x -> Choice1Of2 x
-            | Call ("(default)",Shedding) as x -> Choice2Of2 x
+            | Call ("(default)",MaybeQueuing) as x -> Choice1Of3 x
+            | Deferred ("default","(default)",delay) as x -> Choice2Of3 delay
+            | Call ("(default)",Shedding) as x -> Choice3Of3 x
             | x -> failwithf "Unexpected event %A" x
-        let queued,shed = evnts |> Seq.map queuedOrShed |> Choice.partition
+        let queued,waited,shed = evnts |> Seq.map queuedOrShed |> Choice.partition3
+        let between min max (value : int) = value >= min && value <= max
+        let delayed = waited |> Array.filter (fun x -> x > ms 500)
         test <@ 3 >= Array.length queued // while we'll be pretty clear about shedding, we might discard some queuing notifications depending on the scheduling
+                && between 2 3 (Array.length delayed) // Typically, 3 should get delayed, but depending on scheduling, only 2 get logged as such, and we don't want a flickering test
                 && 1 = Array.length shed @> }

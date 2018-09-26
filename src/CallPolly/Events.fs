@@ -2,12 +2,22 @@
 
 open System
 
+/// Represents a time measurement of a computation that includes stopwatch tick metadata
+[<NoEquality; NoComparison>]
+type StopwatchInterval (startTicks : int64, endTicks : int64) =
+    do if startTicks < 0L || startTicks > endTicks then invalidArg "ticks" "tick arguments do not form a valid interval."
+    member __.StartTicks = startTicks
+    member __.EndTicks = endTicks
+    member __.Elapsed = TimeSpan.FromStopwatchTicks(endTicks - startTicks)
+    override __.ToString() = string __.Elapsed
+
 module Constants =
     let [<Literal>] EventPropertyName = "cp"
 
 type Event =
     | Isolated of action: string
     | Broken of action: string
+    | Deferred of action: string * StopwatchInterval
 
 module internal Log =
     open Serilog.Events
@@ -45,6 +55,10 @@ module internal Log =
     // - in others, the call will eventually fall victim to shedding
     let queuing (actionName: string) (log : Serilog.ILogger) =
         log.Information("Bulkhead Queuing likely for {actionName}", actionName)
+    let deferral policyName actionName (interval : StopwatchInterval) (concurrencyLimit : int) (log: Serilog.ILogger) =
+        let lfe = log |> forEvent (Deferred (actionName,interval))
+        lfe.Warning("Bulkhead Delayed {actionName} for {timespan} due to concurrency limit of {maxParallel} in {policy}",
+            actionName, interval.Elapsed, concurrencyLimit, policyName)
     let shedding (actionName: string) (log : Serilog.ILogger) =
         log.Warning("Bulkhead Shedding for {actionName}", actionName)
     let queuingDryRun (actionName: string) (log : Serilog.ILogger) =

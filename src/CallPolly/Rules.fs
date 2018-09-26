@@ -70,6 +70,7 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
     let logHalfOpen () = log |> Events.Log.halfOpen actionName
     let logReset () = log |> Events.Log.reset actionName
     let logQueuing() = log |> Events.Log.queuing actionName
+    let logDeferral interval concurrencyLimit = log |> Events.Log.deferral policyName actionName interval concurrencyLimit
     let logShedding () = log |> Events.Log.shedding actionName
     let logSheddingDryRun () = log |> Events.Log.sheddingDryRun actionName
     let logQueuingDryRun () = log |> Events.Log.queuingDryRun actionName
@@ -128,6 +129,7 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
         match asyncPolicy with
         | None -> inner
         | Some polly -> async {
+            let startTicks = System.Diagnostics.Stopwatch.GetTimestamp()
             let mutable wasFull = false
             // NB This logging is on a best-effort basis - obviously the guard here has an implied race condition
             // queing might not be needed and/or the request might instead be shed
@@ -143,12 +145,17 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
 
             let! ct = Async.CancellationToken
             let startInnerTask _ctx =
-                // As we'll be let straight through unencumbered in dryRun mode, we do the checks at the point where we're being scheduled to run in order to reduce false positives
+                // As we'll be let straight through unencumbered in dryRun mode, we do the checks at the point where we're being scheduled to run
                 match config, maybeBulkhead with
                 | { limit = Some ({ dryRun = true } as limit) }, Some bh ->
                     let activeCount = Int32.MaxValue - bh.BulkheadAvailableCount
                     if activeCount > limit.dop + limit.queue then logSheddingDryRun ()
                     elif activeCount > limit.dop && wasFull then logQueuingDryRun ()
+                | { limit = Some ({ dryRun = false } as limit) }, _ ->
+                    let endTicks = System.Diagnostics.Stopwatch.GetTimestamp()
+                    let interval = Events.StopwatchInterval(startTicks, endTicks)
+                    if interval.Elapsed.TotalMilliseconds > 1. then
+                        logDeferral interval limit.dop
                 | _ -> ()
 
                 Async.StartAsTask(inner, cancellationToken=ct)

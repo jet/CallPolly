@@ -3,24 +3,10 @@ module CallPolly.Infrastructure
 
 open System
 open System.Diagnostics
+open CallPolly.Events // StopwatchInterval
 
 type Async with
     static member Sleep(x : TimeSpan) = Async.Sleep(int x.TotalMilliseconds)
-
-type TimeSpan with
-    /// Converts a tick count as measured by stopwatch into a TimeSpan value
-    static member FromStopwatchTicks(ticks : int64) =
-        let ticksPerSecond = double Stopwatch.Frequency
-        let totalSeconds = double ticks / ticksPerSecond
-        TimeSpan.FromSeconds totalSeconds
-
-/// Represents a time measurement of a computation that includes stopwatch tick metadata
-[<NoEquality; NoComparison>]
-type StopwatchInterval (startTicks : int64, endTicks : int64) =
-    do if startTicks < 0L || startTicks > endTicks then invalidArg "ticks" "tick arguments do not form a valid interval."
-    member __.StartTicks = startTicks
-    member __.EndTicks = endTicks
-    member __.Elapsed = TimeSpan.FromStopwatchTicks(endTicks - startTicks)
 
 type Stopwatch =
     /// <summary>

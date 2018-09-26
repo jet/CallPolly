@@ -1,7 +1,15 @@
 ﻿[<AutoOpen>]
 module private CallPolly.Infrastructure
 
+open System
 open System.Diagnostics
+
+type TimeSpan with
+    /// Converts a tick count as measured by stopwatch into a TimeSpan value
+    static member FromStopwatchTicks(ticks : int64) =
+        let ticksPerSecond = double Stopwatch.Frequency
+        let totalSeconds = double ticks / ticksPerSecond
+        TimeSpan.FromSeconds totalSeconds
 
 type Async with
     /// <summary>
