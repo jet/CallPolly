@@ -112,11 +112,12 @@ module SerilogExtractors =
         | true, SerilogScalar (:? CallPolly.Events.Event as e) -> Some e
         | _ -> None
     type StatusEvent = Pending|Resetting
-    type CallEvent = Breaking|BreakingDryRun|Shedding|MaybeQueuing|SheddingDryRun|QueuingDryRun
+    type CallEvent = Breaking|BreakingDryRun|MaybeQueuing|SheddingDryRun|QueuingDryRun
     type LogEvent =
         | Isolated of policy: string * action: string
         | Broken of policy: string * action: string
         | Deferred of policy: string * action: string * interval: TimeSpan
+        | Shed of policy: string * action: string
         | Status of string * StatusEvent
         | Call of string * CallEvent
         | Other of string
@@ -131,19 +132,23 @@ module SerilogExtractors =
             & HasProp "policy" (SerilogString policy)
             when eAction = action ->
                 Broken (policy, action)
+        | TemplateContains "Pending Reopen" & HasProp "actionName" (SerilogString an) -> Status(an, Pending)
+        | TemplateContains "Reset" & HasProp "actionName" (SerilogString an) -> Status(an, Resetting)
+        | TemplateContains "Circuit Breaking " & HasProp "actionName" (SerilogString an) -> Call(an, Breaking)
+        | TemplateContains "Circuit DRYRUN Breaking " & HasProp "actionName" (SerilogString an) -> Call(an, BreakingDryRun)
+        | TemplateContains "Bulkhead Queuing likely for " & HasProp "actionName" (SerilogString an) -> Call(an, MaybeQueuing)
+        | TemplateContains "Bulkhead DRYRUN Queuing " & HasProp "actionName" (SerilogString an) -> Call(an, QueuingDryRun)
+        | TemplateContains "Bulkhead DRYRUN Shedding " & HasProp "actionName" (SerilogString an) -> Call(an, SheddingDryRun)
         | CallPollyEvent (Events.Event.Deferred (eAction,eInterval))
             & HasProp "actionName" (SerilogString action)
             & HasProp "policy" (SerilogString policy)
             when eAction = action ->
                 Deferred (policy, action, eInterval.Elapsed)
-        | TemplateContains "Pending Reopen" & HasProp "actionName" (SerilogString an) -> Status(an, Pending)
-        | TemplateContains "Reset" & HasProp "actionName" (SerilogString an) -> Status(an, Resetting)
-        | TemplateContains "Circuit Breaking " & HasProp "actionName" (SerilogString an) -> Call(an, Breaking)
-        | TemplateContains "Circuit DRYRUN Breaking " & HasProp "actionName" (SerilogString an) -> Call(an, BreakingDryRun)
-        | TemplateContains "Bulkhead Shedding " & HasProp "actionName" (SerilogString an) -> Call(an, Shedding)
-        | TemplateContains "Bulkhead Queuing likely for " & HasProp "actionName" (SerilogString an) -> Call(an, MaybeQueuing)
-        | TemplateContains "Bulkhead DRYRUN Queuing " & HasProp "actionName" (SerilogString an) -> Call(an, QueuingDryRun)
-        | TemplateContains "Bulkhead DRYRUN Shedding " & HasProp "actionName" (SerilogString an) -> Call(an, SheddingDryRun)
+        | CallPollyEvent (Events.Event.Shed eAction)
+            & HasProp "actionName" (SerilogString action)
+            & HasProp "policy" (SerilogString policy)
+            when eAction = action ->
+                Shed (policy, action)
         | x -> Other (dumpEvent x)
     type SerilogHelpers.LogCaptureBuffer with
         member buffer.Take() =
@@ -375,7 +380,7 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
         let queuedOrShed = function
             | Call ("(default)",MaybeQueuing) as x -> Choice1Of3 x
             | Deferred ("default","(default)",delay) as x -> Choice2Of3 delay
-            | Call ("(default)",Shedding) as x -> Choice3Of3 x
+            | Shed ("default","(default)") as x -> Choice3Of3 x
             | x -> failwithf "Unexpected event %A" x
         let queued,waited,shed = evnts |> Seq.map queuedOrShed |> Choice.partition3
         let between min max (value : int) = value >= min && value <= max

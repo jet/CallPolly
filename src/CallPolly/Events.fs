@@ -17,7 +17,8 @@ module Constants =
 type Event =
     | Isolated of action: string
     | Broken of action: string
-    | Deferred of action: string * StopwatchInterval
+    | Deferred of action: string * interval: StopwatchInterval
+    | Shed of action: string
 
 module internal Log =
     open Serilog.Events
@@ -59,8 +60,9 @@ module internal Log =
         let lfe = log |> forEvent (Deferred (actionName,interval))
         lfe.Warning("Bulkhead Delayed {actionName} for {timespan} due to concurrency limit of {maxParallel} in {policy}",
             actionName, interval.Elapsed, concurrencyLimit, policyName)
-    let shedding (actionName: string) (log : Serilog.ILogger) =
-        log.Warning("Bulkhead Shedding for {actionName}", actionName)
+    let shedding (policyName: string) (actionName: string) bulkheadConfig (log : Serilog.ILogger) =
+        let lfe = log |> forEvent (Shed actionName)
+        lfe.Warning("Bulkhead Shedding for {actionName} based on {policy}: {@bulkheadConfig}", actionName, policyName, bulkheadConfig)
     let queuingDryRun (actionName: string) (log : Serilog.ILogger) =
         log.Information("Bulkhead DRYRUN Queuing for {actionName}", actionName)
     let sheddingDryRun (actionName: string) (log : Serilog.ILogger) =

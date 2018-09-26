@@ -71,7 +71,7 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
     let logReset () = log |> Events.Log.reset actionName
     let logQueuing() = log |> Events.Log.queuing actionName
     let logDeferral interval concurrencyLimit = log |> Events.Log.deferral policyName actionName interval concurrencyLimit
-    let logShedding () = log |> Events.Log.shedding actionName
+    let logShedding config = log |> Events.Log.shedding policyName actionName config
     let logSheddingDryRun () = log |> Events.Log.sheddingDryRun actionName
     let logQueuingDryRun () = log |> Events.Log.queuingDryRun actionName
     let maybeCb : CircuitBreaker.CircuitBreakerPolicy option =
@@ -106,11 +106,10 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
         match config.limit with
         | None -> None
         | Some limit ->
-
-        let logRejection (_: Context) : Task = logShedding () ; Task.CompletedTask
-        let effectiveLimit = if limit.dryRun then Int32.MaxValue else limit.dop // https://github.com/App-vNext/Polly/issues/496#issuecomment-420183946
-        let bhp = Policy.BulkheadAsync(maxParallelization = effectiveLimit, maxQueuingActions = limit.queue, onBulkheadRejectedAsync = logRejection)
-        Some bhp
+            let logRejection (_: Context) : Task = logShedding limit ; Task.CompletedTask
+            let effectiveLimit = if limit.dryRun then Int32.MaxValue else limit.dop // https://github.com/App-vNext/Polly/issues/496#issuecomment-420183946
+            let bhp = Policy.BulkheadAsync(maxParallelization = effectiveLimit, maxQueuingActions = limit.queue, onBulkheadRejectedAsync = logRejection)
+            Some bhp
     let asyncPolicy : IAsyncPolicy option =
         match maybeBulkhead, maybeCb with
         | Some bh, Some cb -> Policy.WrapAsync(bh, cb) :> IAsyncPolicy |> Some
