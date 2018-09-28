@@ -14,11 +14,15 @@ type StopwatchInterval (startTicks : int64, endTicks : int64) =
 module Constants =
     let [<Literal>] EventPropertyName = "cp"
 
+type BreakerParams = { window: TimeSpan; minThroughput: int; errorRateThreshold: float }
+type BulkheadParams = { dop: int; queue: int }
+
 type Event =
     | Isolated of action: string
-    | Broken of action: string
+    | Broken of action: string * config: BreakerParams
     | Deferred of action: string * interval: StopwatchInterval
-    | Shed of action: string
+    | Shed of action: string * config: BulkheadParams
+    override __.ToString() = "(Metrics)"
 
 module internal Log =
     open Serilog.Events
@@ -31,19 +35,19 @@ module internal Log =
 
     (* Circuit breaker rejections *)
 
-    let actionIsolated (log: Serilog.ILogger) policyName actionName =
+    let actionIsolated policyName actionName (log: Serilog.ILogger) =
         let lfe = log |> forEvent (Isolated actionName)
         lfe.Warning("Circuit Isolated for {actionName} based on {policy} policy", actionName, policyName)
-    let actionBroken (log: Serilog.ILogger) policyName actionName breakerConfig =
-        let lfe = log |> forEvent (Broken actionName)
-        lfe.Warning("Circuit Broken for {actionName} based on {policy}: {@breakerConfig}", actionName, policyName, breakerConfig)
+    let actionBroken policyName actionName (config: BreakerParams) (log: Serilog.ILogger) =
+        let lfe = log |> forEvent (Broken (actionName,config))
+        lfe.Warning("Circuit Broken for {actionName} based on {policy}: {@breakerConfig}", actionName, policyName, config)
 
     (* Circuit Breaker state transitions *)
 
     let breaking (exn: exn) (actionName: string) (timespan: TimeSpan) (log : Serilog.ILogger) =
         log.Warning(exn, "Circuit Breaking for {actionName} for {duration}", actionName, timespan)
     let breakingDryRun (exn: exn) (actionName: string) (timespan: TimeSpan) (log : Serilog.ILogger) =
-        log.Warning(exn, "Circuit DRYRUN Breaking for {actionName} for {duration}", actionName, timespan)
+        log.ForContext("dryRun",true).Warning(exn, "Circuit DRYRUN Breaking for {actionName} for {duration}", actionName, timespan)
     let halfOpen (actionName: string) (log : Serilog.ILogger) =
         log.Information("Circuit Pending Reopen for {actionName}", actionName)
     let reset (actionName: string) (log : Serilog.ILogger) =
@@ -60,10 +64,10 @@ module internal Log =
         let lfe = log |> forEvent (Deferred (actionName,interval))
         lfe.Warning("Bulkhead Delayed {actionName} for {timespan} due to concurrency limit of {maxParallel} in {policy}",
             actionName, interval.Elapsed, concurrencyLimit, policyName)
-    let shedding (policyName: string) (actionName: string) bulkheadConfig (log : Serilog.ILogger) =
-        let lfe = log |> forEvent (Shed actionName)
-        lfe.Warning("Bulkhead Shedding for {actionName} based on {policy}: {@bulkheadConfig}", actionName, policyName, bulkheadConfig)
+    let shedding (policyName: string) (actionName: string) (config:BulkheadParams) (log : Serilog.ILogger) =
+        let lfe = log |> forEvent (Shed (actionName,config))
+        lfe.Warning("Bulkhead Shedding for {actionName} based on {policy}: {@bulkheadConfig}", actionName, policyName, config)
     let queuingDryRun (actionName: string) (log : Serilog.ILogger) =
-        log.Information("Bulkhead DRYRUN Queuing for {actionName}", actionName)
+        log.ForContext("dryRun",true).Information("Bulkhead DRYRUN Queuing for {actionName}", actionName)
     let sheddingDryRun (actionName: string) (log : Serilog.ILogger) =
-        log.Warning("Bulkhead DRYRUN Shedding for {actionName}", actionName)
+        log.ForContext("dryRun",true).Warning("Bulkhead DRYRUN Shedding for {actionName}", actionName)

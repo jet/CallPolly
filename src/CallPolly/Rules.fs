@@ -62,6 +62,18 @@ module ContextKeys =
 
 /// Translates a PolicyConfig's rules to a Polly IAsyncPolicy instance that gets held in the ActionPolicy
 type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: string, config : PolicyConfig) =
+    let logQueuing() = log |> Events.Log.queuing actionName
+    let logDeferral interval concurrencyLimit = log |> Events.Log.deferral policyName actionName interval concurrencyLimit
+    let logShedding config = log |> Events.Log.shedding policyName actionName config
+    let logSheddingDryRun () = log |> Events.Log.sheddingDryRun actionName
+    let logQueuingDryRun () = log |> Events.Log.queuingDryRun actionName
+    let maybeBulkhead : Bulkhead.BulkheadPolicy option =
+        match config.limit with
+        | None -> None
+        | Some limit ->
+            let logRejection (_: Context) : Task = logShedding { dop = limit.dop; queue = limit.queue } ; Task.CompletedTask
+            let effectiveLimit = if limit.dryRun then Int32.MaxValue else limit.dop // https://github.com/App-vNext/Polly/issues/496#issuecomment-420183946
+            Some <| Policy.BulkheadAsync(maxParallelization = effectiveLimit, maxQueuingActions = limit.queue, onBulkheadRejectedAsync = logRejection)
     let logBreaking (exn : exn) (timespan: TimeSpan) =
         match config with
         | { isolate = true } -> ()
@@ -69,11 +81,6 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
         | _ -> log |> Events.Log.breaking exn actionName timespan
     let logHalfOpen () = log |> Events.Log.halfOpen actionName
     let logReset () = log |> Events.Log.reset actionName
-    let logQueuing() = log |> Events.Log.queuing actionName
-    let logDeferral interval concurrencyLimit = log |> Events.Log.deferral policyName actionName interval concurrencyLimit
-    let logShedding config = log |> Events.Log.shedding policyName actionName config
-    let logSheddingDryRun () = log |> Events.Log.sheddingDryRun actionName
-    let logQueuingDryRun () = log |> Events.Log.queuingDryRun actionName
     let maybeCb : CircuitBreaker.CircuitBreakerPolicy option =
         let maybeIsolate isolate (cb : CircuitBreaker.CircuitBreakerPolicy) =
             if isolate then cb.Isolate() else ()
@@ -102,27 +109,30 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
                     onHalfOpen = (if bc.dryRun then ignore else logHalfOpen) )
                 |> maybeIsolate config.isolate
             |> Some
-    let maybeBulkhead : Bulkhead.BulkheadPolicy option =
-        match config.limit with
-        | None -> None
-        | Some limit ->
-            let logRejection (_: Context) : Task = logShedding limit ; Task.CompletedTask
-            let effectiveLimit = if limit.dryRun then Int32.MaxValue else limit.dop // https://github.com/App-vNext/Polly/issues/496#issuecomment-420183946
-            let bhp = Policy.BulkheadAsync(maxParallelization = effectiveLimit, maxQueuingActions = limit.queue, onBulkheadRejectedAsync = logRejection)
-            Some bhp
     let asyncPolicy : IAsyncPolicy option =
-        match maybeBulkhead, maybeCb with
-        | Some bh, Some cb -> Policy.WrapAsync(bh, cb) :> IAsyncPolicy |> Some
-        | Some bh, None -> bh :> IAsyncPolicy |> Some
-        | None, Some cb -> cb :> IAsyncPolicy |> Some
-        | None, None -> None
+        [|  match maybeBulkhead with Some x -> yield x :> IAsyncPolicy | _ -> ()
+            match maybeCb with Some x -> yield x :> IAsyncPolicy | _ -> () |]
+        |> function
+            | [||] ->
+                None
+            | [|x|] -> Some x
+            | xs -> Policy.WrapAsync(xs) :> IAsyncPolicy |> Some
     /// This Exception filter is intended to perform logging as a side-effect without entering a catch and/or having to be re-raised, hence wierd impl
-    let (|LogWhenIsolatedFilter|_|) (ex : exn) =
+    let (|LogWhenRejectedFilter|_|) (ex : exn) =
         match ex with
-        | :? Polly.CircuitBreaker.IsolatedCircuitException -> Events.Log.actionIsolated log policyName actionName; None
-        | :? Polly.CircuitBreaker.BrokenCircuitException -> Events.Log.actionBroken log policyName actionName config.breaker.Value; None
-        | _ when true -> None
-        | _ -> invalidOp "not possible"; Some () // Compiler gets too clever if we never return Some
+        | :? Polly.CircuitBreaker.IsolatedCircuitException ->
+            log |> Events.Log.actionIsolated policyName actionName
+            None
+        | :? Polly.CircuitBreaker.BrokenCircuitException ->
+            let c = config.breaker.Value
+            let config : Events.BreakerParams = { window = c.window; minThroughput = c.minThroughput; errorRateThreshold = c.errorRateThreshold }
+            log |> Events.Log.actionBroken policyName actionName config
+            None
+        | _ when true ->
+            None
+        | _ ->
+            invalidOp "not possible"
+            Some () // Compiler gets too clever if we never return Some
     /// Execute and/or an invocation of a function with the relevant policy applied
     member __.Execute(inner : Async<'a>) : Async<'a> =
         match asyncPolicy with
@@ -151,16 +161,17 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
                     if activeCount > limit.dop + limit.queue then logSheddingDryRun ()
                     elif activeCount > limit.dop && wasFull then logQueuingDryRun ()
                 | { limit = Some ({ dryRun = false } as limit) }, _ ->
-                    let endTicks = System.Diagnostics.Stopwatch.GetTimestamp()
-                    let interval = Events.StopwatchInterval(startTicks, endTicks)
-                    if interval.Elapsed.TotalMilliseconds > 1. then
-                        logDeferral interval limit.dop
+                    let commenceProcessingTicks = System.Diagnostics.Stopwatch.GetTimestamp()
+                    let deferralInterval = Events.StopwatchInterval(startTicks, commenceProcessingTicks)
+                    if deferralInterval.Elapsed.TotalMilliseconds > 1. then
+                        logDeferral deferralInterval limit.dop
                 | _ -> ()
 
+                // TODO see if cancellationToken can be removed
                 Async.StartAsTask(inner, cancellationToken=ct)
-            // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated
+            // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated/Broken
             try return! polly.ExecuteAsync startInnerTask |> Async.AwaitTaskCorrect
-            with LogWhenIsolatedFilter -> return! invalidOp "not possible; Filter always returns None" }
+            with LogWhenRejectedFilter -> return! invalidOp "not possible; Filter always returns None" }
 
 type [<RequireQualifiedAccess>] ChangeLevel = Added |  CallConfigurationOnly | ConfigAndPolicy
 type ActionPolicy(log, actionName, policyName, actionRules) =

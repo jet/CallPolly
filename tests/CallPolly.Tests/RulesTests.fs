@@ -10,6 +10,7 @@ open Xunit
 module Helpers =
     let ms x = TimeSpan.FromMilliseconds (float x)
     let s x = TimeSpan.FromSeconds (float x)
+    let between min max (value : int) = value >= min && value <= max
 
 module Core =
     let pols = """{
@@ -116,7 +117,7 @@ module SerilogExtractors =
     type LogEvent =
         | Isolated of policy: string * action: string
         | Broken of policy: string * action: string
-        | Deferred of policy: string * action: string * interval: TimeSpan
+        | Deferred of policy: string * action: string * duration: TimeSpan
         | Shed of policy: string * action: string
         | Status of string * StatusEvent
         | Call of string * CallEvent
@@ -127,7 +128,7 @@ module SerilogExtractors =
             & HasProp "policy" (SerilogString policy)
             when eAction = action ->
                 Isolated (policy, action)
-        | CallPollyEvent (Events.Event.Broken eAction)
+        | CallPollyEvent (Events.Event.Broken (eAction,_config))
             & HasProp "actionName" (SerilogString action)
             & HasProp "policy" (SerilogString policy)
             when eAction = action ->
@@ -144,7 +145,7 @@ module SerilogExtractors =
             & HasProp "policy" (SerilogString policy)
             when eAction = action ->
                 Deferred (policy, action, eInterval.Elapsed)
-        | CallPollyEvent (Events.Event.Shed eAction)
+        | CallPollyEvent (Events.Event.Shed (eAction,_config))
             & HasProp "actionName" (SerilogString action)
             & HasProp "policy" (SerilogString policy)
             when eAction = action ->
@@ -383,8 +384,8 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
             | Shed ("default","(default)") as x -> Choice3Of3 x
             | x -> failwithf "Unexpected event %A" x
         let queued,waited,shed = evnts |> Seq.map queuedOrShed |> Choice.partition3
-        let between min max (value : int) = value >= min && value <= max
         let delayed = waited |> Array.filter (fun x -> x > ms 500)
-        test <@ 3 >= Array.length queued // while we'll be pretty clear about shedding, we might discard some queuing notifications depending on the scheduling
+        // while we'll be pretty clear about shedding, we might discard some queuing notifications depending on the scheduling, and the shed one can also look like it will be queued
+        test <@ 4 >= Array.length queued
                 && between 2 3 (Array.length delayed) // Typically, 3 should get delayed, but depending on scheduling, only 2 get logged as such, and we don't want a flickering test
                 && 1 = Array.length shed @> }
