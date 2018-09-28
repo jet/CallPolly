@@ -28,11 +28,10 @@ type Async with
                     sc ())
             |> ignore)
 
-    // alternate impl: http://www.fssnip.net/ai/title/AsyncSleep-with-immediate-cancellation-
-    // https://stackoverflow.com/a/9045567/11635
-    static member SleepCorrect(x : TimeSpan) = async {
-        let! ct = Async.CancellationToken
-        return! System.Threading.Tasks.Task.Delay(x, ct) |> Async.AwaitTaskCorrect }
+    /// Helper function for testing only - does a Sleep without honoring cancellation as F# stdlib did pre 3.0
+    // See https://stackoverflow.com/a/14149643/11635 for some discussion and examples
+    static member SleepWrong(x : TimeSpan) =
+        System.Threading.Tasks.Task.Delay(x (* sic - not propagating Async.CancellationToken*)) |> Async.AwaitTaskCorrect
 
 type Stopwatch =
     /// <summary>
@@ -58,7 +57,7 @@ module Choice =
             | Choice1Of2 l -> left.Add l
             | Choice2Of2 r -> right.Add r
         left.ToArray(), right.ToArray()
-    /// Splits a set of inputs into Choice1Of2 / Choice2Of2
+    /// Splits a set of inputs into Choice1Of3 / Choice2Of3 / Choice3Of3
     let partition3 (inputs : seq<Choice<'Left,'Middle,'Right>>) =
         let left, middle, right = ResizeArray(), ResizeArray(), ResizeArray()
         for i in inputs do

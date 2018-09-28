@@ -4,6 +4,8 @@ open Polly
 open System
 open System.Collections.Generic
 open System.Collections.Concurrent
+open System.Diagnostics
+open System.Threading
 open System.Threading.Tasks
 
 [<RequireQualifiedAccess>]
@@ -14,7 +16,8 @@ type LogMode =
 
 type BreakerConfig = { window: TimeSpan; minThroughput: int; errorRateThreshold: float; retryAfter: TimeSpan; dryRun: bool }
 type BulkheadConfig = { dop: int; queue: int; dryRun: bool }
-type PolicyConfig = { isolate: bool; limit: BulkheadConfig option; breaker: BreakerConfig option }
+type CutoffConfig = { timeout: TimeSpan; sla: TimeSpan option; dryRun: bool }
+type PolicyConfig = { isolate: bool; cutoff: CutoffConfig option; limit: BulkheadConfig option; breaker: BreakerConfig option }
 type CallConfiguration =
     {   timeout: TimeSpan option; sla: TimeSpan option
         ``base``: Uri option; rel: Uri option
@@ -28,6 +31,7 @@ type ActionRule =
     | Log of req: LogMode * res: LogMode
     | Break of BreakerConfig
     | Limit of BulkheadConfig
+    | Cutoff of CutoffConfig
     | Isolate
 
 let inferPolicy : ActionRule seq -> PolicyConfig =
@@ -35,9 +39,10 @@ let inferPolicy : ActionRule seq -> PolicyConfig =
         | ActionRule.Isolate -> { s with isolate = true }
         | ActionRule.Break breakerConfig -> { s with breaker = Some breakerConfig }
         | ActionRule.Limit bulkheadConfig -> { s with limit = Some bulkheadConfig }
+        | ActionRule.Cutoff cutoffConfig -> { s with cutoff = Some cutoffConfig }
         // Covered by inferConfig
         | ActionRule.BaseUri _ | ActionRule.RelUri _ | ActionRule.Sla _ | ActionRule.Log _ -> s
-    Seq.fold folder { isolate = false; limit = None; breaker = None }
+    Seq.fold folder { isolate = false; cutoff = None; limit = None; breaker = None }
 let inferConfig xs: CallConfiguration * Uri option =
     let folder s = function
         | ActionRule.BaseUri uri -> { s with ``base`` = Some uri }
@@ -45,7 +50,7 @@ let inferConfig xs: CallConfiguration * Uri option =
         | ActionRule.Sla (sla=sla; timeout=t) -> { s with sla = Some sla; timeout = Some t }
         | ActionRule.Log (req=reqLevel; res=resLevel) -> { s with reqLog = reqLevel; resLog = resLevel }
         // Covered by inferPolicy
-        | ActionRule.Isolate | ActionRule.Limit _ | ActionRule.Break _ -> s
+        | ActionRule.Isolate | ActionRule.Cutoff _ | ActionRule.Limit _ | ActionRule.Break _ -> s
     let def =
         {   reqLog = LogMode.Never; resLog = LogMode.Never
             timeout = None; sla = None
@@ -62,6 +67,19 @@ module ContextKeys =
 
 /// Translates a PolicyConfig's rules to a Polly IAsyncPolicy instance that gets held in the ActionPolicy
 type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: string, config : PolicyConfig) =
+    let logBreach sla interval = log |> Events.Log.cutoffSlaBreached policyName actionName sla interval
+    let logTimeout (config: CutoffConfig) interval =
+        let cfg = config.dryRun, ({ timeout = config.timeout; sla = Option.toNullable config.sla } : Events.CutoffParams)
+        log |> Events.Log.cutoffTimeout policyName actionName cfg interval
+    let maybeCutoff: Timeout.TimeoutPolicy option =
+        match config.cutoff with
+        // NB this is Optimistic (aka correct ;) https://github.com/App-vNext/Polly/wiki/Timeout mode for a reason
+        // (i.e. giving up on work early while it still consumes a thread, assisting a bug or adversary to DOS you)
+        // In the general case, it's always possible to write an async expression that honors cancellation
+        // If anyone tries to insist on using Pessimistic mode, this should instead by accomplished by explicitly having
+        // the inner computation cut the orphan work adrift in the place where the code requires such questionable semantics
+        | Some cutoff when not cutoff.dryRun -> Some <| Policy.TimeoutAsync(cutoff.timeout)
+        | _ -> None
     let logQueuing() = log |> Events.Log.queuing actionName
     let logDeferral interval concurrencyLimit = log |> Events.Log.deferral policyName actionName interval concurrencyLimit
     let logShedding config = log |> Events.Log.shedding policyName actionName config
@@ -110,15 +128,18 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
                 |> maybeIsolate config.isolate
             |> Some
     let asyncPolicy : IAsyncPolicy option =
-        [|  match maybeBulkhead with Some x -> yield x :> IAsyncPolicy | _ -> ()
+        [|  match maybeCutoff with Some x -> yield x :> IAsyncPolicy | _ -> ()
+            match maybeBulkhead with Some x -> yield x :> IAsyncPolicy | _ -> ()
             match maybeCb with Some x -> yield x :> IAsyncPolicy | _ -> () |]
         |> function
             | [||] ->
-                None
+                match config.cutoff with
+                | Some { dryRun=true } -> Policy.NoOpAsync() :> IAsyncPolicy |> Some
+                | _ -> None
             | [|x|] -> Some x
             | xs -> Policy.WrapAsync(xs) :> IAsyncPolicy |> Some
     /// This Exception filter is intended to perform logging as a side-effect without entering a catch and/or having to be re-raised, hence wierd impl
-    let (|LogWhenRejectedFilter|_|) (ex : exn) =
+    let (|LogWhenRejectedFilter|_|) (processingInterval : Lazy<Events.StopwatchInterval>) (ex : exn) =
         match ex with
         | :? Polly.CircuitBreaker.IsolatedCircuitException ->
             log |> Events.Log.actionIsolated policyName actionName
@@ -127,6 +148,9 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
             let c = config.breaker.Value
             let config : Events.BreakerParams = { window = c.window; minThroughput = c.minThroughput; errorRateThreshold = c.errorRateThreshold }
             log |> Events.Log.actionBroken policyName actionName config
+            None
+        | :? Polly.Timeout.TimeoutRejectedException ->
+            logTimeout config.cutoff.Value <| processingInterval.Force()
             None
         | _ when true ->
             None
@@ -138,7 +162,6 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
         match asyncPolicy with
         | None -> inner
         | Some polly -> async {
-            let startTicks = System.Diagnostics.Stopwatch.GetTimestamp()
             let mutable wasFull = false
             // NB This logging is on a best-effort basis - obviously the guard here has an implied race condition
             // queing might not be needed and/or the request might instead be shed
@@ -152,8 +175,13 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
                 if activeCount > limit.dop then wasFull <- true
             | _ -> ()
 
-            let! ct = Async.CancellationToken
-            let startInnerTask _ctx =
+            let startTicks = Stopwatch.GetTimestamp()
+            let jitProcessingInterval =
+                lazy
+                    let processingCompletedTicks = Stopwatch.GetTimestamp()
+                    Events.StopwatchInterval(startTicks, processingCompletedTicks)
+
+            let startInnerTask (pollyCt: CancellationToken) =
                 // As we'll be let straight through unencumbered in dryRun mode, we do the checks at the point where we're being scheduled to run
                 match config, maybeBulkhead with
                 | { limit = Some ({ dryRun = true } as limit) }, Some bh ->
@@ -161,17 +189,32 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
                     if activeCount > limit.dop + limit.queue then logSheddingDryRun ()
                     elif activeCount > limit.dop && wasFull then logQueuingDryRun ()
                 | { limit = Some ({ dryRun = false } as limit) }, _ ->
-                    let commenceProcessingTicks = System.Diagnostics.Stopwatch.GetTimestamp()
+                    let commenceProcessingTicks = Stopwatch.GetTimestamp()
                     let deferralInterval = Events.StopwatchInterval(startTicks, commenceProcessingTicks)
                     if deferralInterval.Elapsed.TotalMilliseconds > 1. then
                         logDeferral deferralInterval limit.dop
                 | _ -> ()
 
-                // TODO see if cancellationToken can be removed
-                Async.StartAsTask(inner, cancellationToken=ct)
-            // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated/Broken
-            try return! polly.ExecuteAsync startInnerTask |> Async.AwaitTaskCorrect
-            with LogWhenRejectedFilter -> return! invalidOp "not possible; Filter always returns None" }
+                // sic - cancellation of the inner computation needs to be controlled by Polly's chain of handlers
+                // for example, if a cutoff is configured, it's Polly that will be requesting the cancellation
+                Async.StartAsTask(inner, cancellationToken=pollyCt)
+            let execute = async {
+                let! ct = Async.CancellationToken // Grab async cancellation token of this `Execute` call, so cancellation gets propagated into the Polly [wrap]
+                try return! polly.ExecuteAsync(startInnerTask, ct) |> Async.AwaitTaskCorrect
+                // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated/Broken
+                with LogWhenRejectedFilter jitProcessingInterval -> return! invalidOp "not possible; Filter always returns None" }
+            match config.cutoff with
+            | None | Some { sla=None; dryRun=false } ->
+                return! execute
+            | Some ({ timeout=timeout; sla=sla; dryRun = dryRun } as config)->
+                try return! execute
+                finally
+                    if not jitProcessingInterval.IsValueCreated then
+                        let processingInterval = jitProcessingInterval.Force()
+                        match sla, processingInterval.Elapsed with
+                        | _, elapsed when elapsed > timeout && dryRun -> logTimeout config processingInterval
+                        | Some sla, elapsed when elapsed > sla -> logBreach sla processingInterval
+                        | _ -> () }
 
 type [<RequireQualifiedAccess>] ChangeLevel = Added |  CallConfigurationOnly | ConfigAndPolicy
 type ActionPolicy(log, actionName, policyName, actionRules) =

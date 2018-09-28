@@ -48,6 +48,7 @@ type [<Newtonsoft.Json.JsonConverter(typeof<Converters.UnionConverter>, "ruleNam
     | Log of req: LogAmount * res: LogAmount
     | Break of windowS: int * minRequests: int * failPct: float * breakS: float * dryRun: Nullable<bool>
     | Limit of maxParallel: int * maxQueue: int * dryRun: Nullable<bool>
+    | Cutoff of timeoutMs: int * slaMs: int option * dryRun: Nullable<bool>
     | Isolate
     /// Catch-all case when a ruleName is unknown (allows us to add new policies but have existing instances safely ignore it)
     | Unknown
@@ -94,6 +95,8 @@ let parse policiesJson mapJson =
                     dop = dop
                     queue = queue
                     dryRun = if dryRun.HasValue then dryRun.Value else false }
+            | ActionParameter.Cutoff(timeoutMs=TimeSpanMs timeout; slaMs=slaMs; dryRun=dryRun) ->
+                yield ActionRule.Cutoff { timeout = timeout; sla = slaMs |> Option.map (|TimeSpanMs|); dryRun = if dryRun.HasValue then dryRun.Value else false }
             | ActionParameter.Unknown ->
                 // TODO capture name of unknown rule, log once (NB recomputed every 10s so can't log every time)
                 () // Ignore ruleNames we don't yet support (allows us to define rules only newer instances understand transparently)

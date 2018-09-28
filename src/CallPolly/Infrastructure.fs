@@ -12,6 +12,7 @@ type TimeSpan with
         TimeSpan.FromSeconds totalSeconds
 
 type Async with
+
     /// <summary>
     ///     Gets the result of given task so that in the event of exception
     ///     the actual user exception is raised as opposed to being wrapped

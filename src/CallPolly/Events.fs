@@ -16,12 +16,15 @@ module Constants =
 
 type BreakerParams = { window: TimeSpan; minThroughput: int; errorRateThreshold: float }
 type BulkheadParams = { dop: int; queue: int }
+type CutoffParams = { timeout: TimeSpan; sla: Nullable<TimeSpan> }
 
 type Event =
     | Isolated of action: string
     | Broken of action: string * config: BreakerParams
     | Deferred of action: string * interval: StopwatchInterval
     | Shed of action: string * config: BulkheadParams
+    | Breached of action: string * sla: TimeSpan * interval: StopwatchInterval
+    | Canceled of action: string * config: CutoffParams * interval: StopwatchInterval
     override __.ToString() = "(Metrics)"
 
 module internal Log =
@@ -71,3 +74,19 @@ module internal Log =
         log.ForContext("dryRun",true).Information("Bulkhead DRYRUN Queuing for {actionName}", actionName)
     let sheddingDryRun (actionName: string) (log : Serilog.ILogger) =
         log.ForContext("dryRun",true).Warning("Bulkhead DRYRUN Shedding for {actionName}", actionName)
+
+    (* Cutoff violations and abandonments *)
+
+    let cutoffSlaBreached (policyName: string) (actionName: string) (sla: TimeSpan) (interval: StopwatchInterval) (log: Serilog.ILogger) =
+        let lfe = log |> forEvent (Breached (actionName,sla,interval))
+        lfe.Warning("Cutoff {actionName} {durationMs} breached SLA {slaMs} in {policy}",
+            actionName, interval.Elapsed.TotalMilliseconds, sla.TotalMilliseconds, policyName)
+    let cutoffTimeout (policyName: string) (actionName: string) (dryRun, config : CutoffParams) (interval: StopwatchInterval) (log : Serilog.ILogger) =
+        if dryRun then
+            let lfe = log.ForContext("dryRun",true)
+            lfe.Warning("Cutoff DRYRUN {actionName} {durationMs} (cancelation would have been requested on {timeoutMs}) in {policy}",
+                actionName, interval.Elapsed.TotalMilliseconds, config.timeout.TotalMilliseconds, policyName)
+        else
+            let lfe = log |> forEvent (Canceled (actionName,config,interval))
+            lfe.Warning("Cutoff {actionName} {durationMs} canceled after {timeoutMs} in {policy}: {@cutoffConfig}",
+                actionName, interval.Elapsed.TotalMilliseconds, config.timeout.TotalMilliseconds, policyName, config)
