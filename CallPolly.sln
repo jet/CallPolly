@@ -11,10 +11,11 @@ Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "CallPolly.Tests", "tests\Ca
 EndProject
 Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "Newtonsoft.Json.Converters.FSharp", "src\Newtonsoft.Json.Converters.FSharp\Newtonsoft.Json.Converters.FSharp.fsproj", "{CBC2F73D-BEB8-4775-8FCD-A48083C5E900}"
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{6047ADD6-C48C-4583-A5C6-58FDF7A0DC10}"
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = ".project", ".project", "{6047ADD6-C48C-4583-A5C6-58FDF7A0DC10}"
 	ProjectSection(SolutionItems) = preProject
 		LICENSE = LICENSE
 		README.md = README.md
+		SECURITY.md = SECURITY.md
 	EndProjectSection
 EndProject
 Global
