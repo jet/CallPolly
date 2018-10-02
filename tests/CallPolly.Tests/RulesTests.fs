@@ -91,8 +91,8 @@ module Core =
 
         let [<Fact>] ``Policy TryFind happy path`` () =
             let pol = Parser.parse log defs
-            let tryFindActionRules actionName =
-                pol.TryFind("default",actionName)
+            let tryFindActionRules call =
+                pol.TryFind("default",call)
                 |> Option.map (fun x -> x.Raw, x.Config, x.Policy)
             let eddRaw, eddCfg, eddRules = trap <@ tryFindActionRules "EstimatedDeliveryDates" |> Option.get @>
             test <@ [baseRule; logRule; Parser.ActionRule.Sla (ms 1000, ms 5000)] = eddRaw
@@ -108,7 +108,7 @@ module Core =
             let pol = Parser.parse log defs
             let defaultLog = pol.Find("default","(defaultLog)").Raw
             let default_ = pol.Find("default","shouldDefault").Raw
-            let findActionRules actionName = pol.Find("default",actionName).Raw
+            let findActionRules call = pol.Find("default",call).Raw
             test <@ baseRule :: default_ = findActionRules "EstimatedDeliveryDates" @>
             test <@ [Parser.ActionRule.Isolate] = findActionRules "EstimatedDeliveryDate" @>
             test <@ defaultLog @ [limitRule; breakRule; cutoffRule; Parser.ActionRule.Sla (ms 5000, ms 10000); Parser.ActionRule.Isolate] = findActionRules "placeOrder" @>
@@ -145,55 +145,61 @@ module SerilogExtractors =
     type StatusEvent = Pending|Resetting
     type CallEvent = Breaking|BreakingDryRun|MaybeQueuing|SheddingDryRun|QueuingDryRun|CanceledDryRun of TimeSpan
     type LogEvent =
-        | Isolated of policy: string * action: string
-        | Broken of policy: string * action: string
-        | Deferred of policy: string * action: string * duration: TimeSpan
-        | Shed of policy: string * action: string
-        | Breached of action: string * duration: TimeSpan
-        | Canceled of action: string * duration: TimeSpan
+        | Isolated of service: string * call: string * policy: string
+        | Broken of service: string * call: string * policy: string
+        | Deferred of service: string * call: string * policy: string * duration: TimeSpan
+        | Shed of service: string * call: string * policy: string
+        | Breached of service: string * call: string * duration: TimeSpan
+        | Canceled of service: string * call: string * duration: TimeSpan
         | Status of string * StatusEvent
         | Call of string * CallEvent
         | Other of string
     let classify = function
-        | CallPollyEvent (Events.Event.Isolated eAction)
-            & HasProp "actionName" (SerilogString action)
+        | CallPollyEvent (Events.Event.Isolated(_service,eCall))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
             & HasProp "policy" (SerilogString policy)
-            when eAction = action ->
-                Isolated (policy, action)
-        | CallPollyEvent (Events.Event.Broken (eAction,_config))
-            & HasProp "actionName" (SerilogString action)
+            when eCall = call ->
+                Isolated (service,call,policy)
+        | CallPollyEvent (Events.Event.Broken (_service,eCall,_config))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
             & HasProp "policy" (SerilogString policy)
-            when eAction = action ->
-                Broken (policy, action)
-        | TemplateContains "Pending Reopen" & HasProp "actionName" (SerilogString an) -> Status(an, Pending)
-        | TemplateContains "Reset" & HasProp "actionName" (SerilogString an) -> Status(an, Resetting)
-        | TemplateContains "Circuit Breaking " & HasProp "actionName" (SerilogString an) -> Call(an, Breaking)
-        | TemplateContains "Circuit DRYRUN Breaking " & HasProp "actionName" (SerilogString an) -> Call(an, BreakingDryRun)
-        | TemplateContains "Bulkhead Queuing likely for " & HasProp "actionName" (SerilogString an) -> Call(an, MaybeQueuing)
-        | TemplateContains "Bulkhead DRYRUN Queuing " & HasProp "actionName" (SerilogString an) -> Call(an, QueuingDryRun)
-        | TemplateContains "Bulkhead DRYRUN Shedding " & HasProp "actionName" (SerilogString an) -> Call(an, SheddingDryRun)
-        | CallPollyEvent (Events.Event.Deferred (eAction,eInterval))
-            & HasProp "actionName" (SerilogString action)
+            when eCall = call ->
+                Broken (service,call,policy)
+        | TemplateContains "Pending Reopen" & HasProp "call" (SerilogString an) -> Status(an, Pending)
+        | TemplateContains "Reset" & HasProp "call" (SerilogString an) -> Status(an, Resetting)
+        | TemplateContains "Circuit Breaking " & HasProp "call" (SerilogString an) -> Call(an, Breaking)
+        | TemplateContains "Circuit DRYRUN Breaking " & HasProp "call" (SerilogString an) -> Call(an, BreakingDryRun)
+        | TemplateContains "Bulkhead Queuing likely for " & HasProp "call" (SerilogString an) -> Call(an, MaybeQueuing)
+        | TemplateContains "Bulkhead DRYRUN Queuing " & HasProp "call" (SerilogString an) -> Call(an, QueuingDryRun)
+        | TemplateContains "Bulkhead DRYRUN Shedding " & HasProp "call" (SerilogString an) -> Call(an, SheddingDryRun)
+        | CallPollyEvent (Events.Event.Deferred (_service,eCall,eInterval))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
             & HasProp "policy" (SerilogString policy)
-            when eAction = action ->
-                Deferred (policy, action, eInterval.Elapsed)
-        | CallPollyEvent (Events.Event.Shed (eAction,_config))
-            & HasProp "actionName" (SerilogString action)
+            when eCall = call ->
+                Deferred (service,call,policy, eInterval.Elapsed)
+        | CallPollyEvent (Events.Event.Shed (_service,eCall,_config))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
             & HasProp "policy" (SerilogString policy)
-            when eAction = action ->
-                Shed (policy, action)
-        | CallPollyEvent (Events.Event.Breached (eAction,_sla,interval))
-            & HasProp "actionName" (SerilogString action)
+            when eCall = call ->
+                Shed (service,call,policy)
+        | CallPollyEvent (Events.Event.Breached (_service,eCall,_sla,interval))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
             & HasProp "policy" (SerilogString _policy)
-            when eAction = action ->
-                Breached (action, interval.Elapsed)
-        | CallPollyEvent (Events.Event.Canceled (eAction,_config,interval))
-            & HasProp "actionName" (SerilogString action)
+            when eCall = call ->
+                Breached (service,call, interval.Elapsed)
+        | CallPollyEvent (Events.Event.Canceled (_service,eCall,_config,interval))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
             & HasProp "policy" (SerilogString _policy)
-            when eAction = action ->
-                Canceled (action, interval.Elapsed)
+            when eCall = call ->
+                Canceled (service,call, interval.Elapsed)
         | TemplateContains "Cutoff DRYRUN " & TemplateContains "cancelation would have been requested on "
-            & HasProp "actionName" (SerilogString an)
+            & HasProp "call" (SerilogString an)
             & HasProp "policy" (SerilogString _policy)
             & HasProp "durationMs" (SerilogScalar (:? float as duration)) ->
                 Call(an, CanceledDryRun(TimeSpan.FromMilliseconds duration))
@@ -219,7 +225,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
         let call = async { return 42 }
         let! result = ap.Execute(call) |> Async.Catch
         test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
-        [Isolated ("heavy","placeOrder")] =! buffer.Take()
+        [Isolated ("default","placeOrder","heavy")] =! buffer.Take()
         let updated =
             let polsWithIsolateMangled = Core.defs.Replace("Isolate","isolate")
             pol |> Parser.updateFrom polsWithIsolateMangled |> List.ofSeq
@@ -231,11 +237,11 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
 
     let isolateDefs = """{ "services": { "default": {
         "calls": {
-            "nonDefault": "default"
+            "nonDefault": "def"
         },
-        "defaultPolicy": "default",
+        "defaultPolicy": "def",
         "policies": {
-            "default": [
+            "def": [
                 { "rule": "Isolate"  }
             ]
         }
@@ -248,7 +254,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
         let call = async { return 42 }
         let! result = ap.Execute(call) |> Async.Catch
         test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
-        [Isolated ("default","(default)")] =! buffer.Take() }
+        [Isolated ("default","(default)","def")] =! buffer.Take() }
 
     let [<Fact>] ``when removed, stops intercepting processing, does not log`` () = async {
         let pol = Parser.parse log isolateDefs
@@ -257,7 +263,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
         let call = async { return 42 }
         let! result = ap.Execute(call) |> Async.Catch
         test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
-        [Isolated ("default","nonDefault")] =! buffer.Take()
+        [Isolated ("default","nonDefault","def")] =! buffer.Take()
         let updated =
             let polsWithIsolateMangled = isolateDefs.Replace("Isolate","isolate")
             pol |> Parser.updateFrom polsWithIsolateMangled |> List.ofSeq
@@ -272,9 +278,9 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
 
     let defs = """{ "services": { "default": {
         "calls": {},
-        "defaultPolicy": "default",
+        "defaultPolicy": "def",
         "policies": {
-            "default": [
+            "def": [
                 { "rule": "Break", "windowS": 5, "minRequests": 2, "failPct": 50, "breakS": .5, "dryRun": false }
             ]
         }
@@ -296,7 +302,7 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
             let fail = async { return failwith "Unexpected" }
             let! result = ap.Execute(fail) |> Async.Catch
             test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.BrokenCircuitException) -> true | _ -> false @>
-            [Broken ("default","(default)")] =! buffer.Take() }
+            [Broken ("default","(default)","def")] =! buffer.Take() }
         let runSuccess = async {
             let success = async { return 42 }
             let! result = ap.Execute(success)
@@ -315,7 +321,7 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
         // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
         let changedRules = defs.Replace(".5","5")
         pol |> Parser.updateFrom changedRules |> ignore
-        do! shouldBeOpen }
+        do! runSuccess }
 
     let [<Fact>] ``dryRun mode prevents breaking, logs status changes appropriately`` () = async {
         let pol = Parser.parse log dryRunDefs
@@ -355,9 +361,9 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
 
     let defs = """{ "services": { "default": {
         "calls": {},
-        "defaultPolicy": "default",
+        "defaultPolicy": "def",
         "policies": {
-            "default": [
+            "def": [
                 { "rule": "Limit", "maxParallel": 2, "maxQueue": 3, "dryRun": false }
             ]
         }
@@ -419,8 +425,8 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
         let evnts = buffer.Take()
         let queuedOrShed = function
             | Call ("(default)",MaybeQueuing) as x -> Choice1Of3 x
-            | Deferred ("default","(default)",delay) as x -> Choice2Of3 delay
-            | Shed ("default","(default)") as x -> Choice3Of3 x
+            | Deferred ("default","(default)","def",delay) as x -> Choice2Of3 delay
+            | Shed ("default","(default)","def") as x -> Choice3Of3 x
             | x -> failwithf "Unexpected event %A" x
         let queued,waited,shed = evnts |> Seq.map queuedOrShed |> Choice.partition3
         let delayed = waited |> Array.filter (fun x -> x > ms 500)
@@ -478,7 +484,7 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
                 && errs |> Seq.forall (fun x -> x.GetType() = typeof<TimeoutException>) @>
         let evnts = buffer.Take()
         let breachedOrCanceled = function
-            | Breached ("(default)",_d) as x -> Choice1Of2 x
+            | Breached ("default","(default)",_d) as x -> Choice1Of2 x
             | Call ("(default)",CanceledDryRun _d) as x -> Choice2Of2 x
             | x -> failwithf "Unexpected event %A" x
         let breached,wouldBeCancelled = evnts |> Seq.map breachedOrCanceled |> Choice.partition
@@ -506,8 +512,8 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
                 && between 2 4 <| errsWhere (fun x -> x :? Polly.Timeout.TimeoutRejectedException) @>
         let evnts = buffer.Take()
         let breachedOrCanceled = function
-            | Breached ("(default)",_d) as x -> Choice1Of2 x
-            | Canceled ("(default)",_d) as x -> Choice2Of2 x
+            | Breached ("default","(default)",_d) as x -> Choice1Of2 x
+            | Canceled ("default","(default)",_d) as x -> Choice2Of2 x
             | x -> failwithf "Unexpected event %A" x
         let breached,canceled = evnts |> Seq.map breachedOrCanceled |> Choice.partition
         // even the zero delay ones could in extreme circumstances end up with wierd timing effects

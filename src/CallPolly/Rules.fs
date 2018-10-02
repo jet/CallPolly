@@ -19,11 +19,11 @@ type GovernorState =
         queueAvailable : int option }
 
 /// Translates a PolicyConfig's rules to a Polly IAsyncPolicy instance that gets held in the ActionPolicy
-type Governor(log: Serilog.ILogger, actionName : string, policyName: string, config : PolicyConfig) =
-    let logBreach sla interval = log |> Events.Log.cutoffSlaBreached policyName actionName sla interval
+type Governor(log: Serilog.ILogger, serviceName: string, callName : string, policyName: string, config : PolicyConfig) =
+    let logBreach sla interval = log |> Events.Log.cutoffSlaBreached (serviceName, callName, policyName) sla interval
     let logTimeout (config: CutoffConfig) interval =
         let cfg = config.dryRun, ({ timeout = config.timeout; sla = Option.toNullable config.sla } : Events.CutoffParams)
-        log |> Events.Log.cutoffTimeout policyName actionName cfg interval
+        log |> Events.Log.cutoffTimeout (serviceName, callName, policyName) cfg interval
     let maybeCutoff: Timeout.TimeoutPolicy option =
         match config.cutoff with
         // NB this is Optimistic (aka correct ;) https://github.com/App-vNext/Polly/wiki/Timeout mode for a reason
@@ -33,11 +33,11 @@ type Governor(log: Serilog.ILogger, actionName : string, policyName: string, con
         // the inner computation cut the orphan work adrift in the place where the code requires such questionable semantics
         | Some cutoff when not cutoff.dryRun -> Some <| Policy.TimeoutAsync(cutoff.timeout)
         | _ -> None
-    let logQueuing() = log |> Events.Log.queuing actionName
-    let logDeferral interval concurrencyLimit = log |> Events.Log.deferral policyName actionName interval concurrencyLimit
-    let logShedding config = log |> Events.Log.shedding policyName actionName config
-    let logSheddingDryRun () = log |> Events.Log.sheddingDryRun actionName
-    let logQueuingDryRun () = log |> Events.Log.queuingDryRun actionName
+    let logQueuing() = log |> Events.Log.queuing (serviceName, callName)
+    let logDeferral interval concurrencyLimit = log |> Events.Log.deferral (serviceName, callName, policyName) interval concurrencyLimit
+    let logShedding config = log |> Events.Log.shedding (serviceName, callName, policyName) config
+    let logSheddingDryRun () = log |> Events.Log.sheddingDryRun (serviceName, callName, policyName)
+    let logQueuingDryRun () = log |> Events.Log.queuingDryRun (serviceName, callName, policyName)
     let maybeBulkhead : Bulkhead.BulkheadPolicy option =
         match config.limit with
         | None -> None
@@ -48,10 +48,10 @@ type Governor(log: Serilog.ILogger, actionName : string, policyName: string, con
     let logBreaking (exn : exn) (timespan: TimeSpan) =
         match config with
         | { isolate = true } -> ()
-        | { breaker = Some { dryRun = true; retryAfter = t } } -> log |> Events.Log.breakingDryRun exn actionName t
-        | _ -> log |> Events.Log.breaking exn actionName timespan
-    let logHalfOpen () = log |> Events.Log.halfOpen actionName
-    let logReset () = log |> Events.Log.reset actionName
+        | { breaker = Some { dryRun = true; retryAfter = t } } -> log |> Events.Log.breakingDryRun exn (serviceName, callName) t
+        | _ -> log |> Events.Log.breaking exn (serviceName, callName) timespan
+    let logHalfOpen () = log |> Events.Log.halfOpen (serviceName, callName)
+    let logReset () = log |> Events.Log.reset (serviceName, callName)
     let maybeCb : CircuitBreaker.CircuitBreakerPolicy option =
         let maybeIsolate isolate (cb : CircuitBreaker.CircuitBreakerPolicy) =
             if isolate then cb.Isolate() else ()
@@ -95,12 +95,12 @@ type Governor(log: Serilog.ILogger, actionName : string, policyName: string, con
     let (|LogWhenRejectedFilter|_|) (processingInterval : Lazy<Events.StopwatchInterval>) (ex : exn) =
         match ex with
         | :? Polly.CircuitBreaker.IsolatedCircuitException ->
-            log |> Events.Log.actionIsolated policyName actionName
+            log |> Events.Log.actionIsolated (serviceName, callName, policyName)
             None
         | :? Polly.CircuitBreaker.BrokenCircuitException ->
             let c = config.breaker.Value
             let config : Events.BreakerParams = { window = c.window; minThroughput = c.minThroughput; errorRateThreshold = c.errorRateThreshold }
-            log |> Events.Log.actionBroken policyName actionName config
+            log |> Events.Log.actionBroken (serviceName, callName, policyName) config
             None
         | :? Polly.Timeout.TimeoutRejectedException ->
             logTimeout config.cutoff.Value <| processingInterval.Force()
@@ -179,15 +179,14 @@ type Governor(log: Serilog.ILogger, actionName : string, policyName: string, con
 type [<RequireQualifiedAccess>] ChangeLevel = Added | ConfigurationAndPolicy | Configuration | Policy
 
 type CallConfig<'TCallConfig, 'Raw> =
-    {   callName: string
-        policyName: string
+    {   policyName: string
         policyConfig: PolicyConfig
         callConfig: 'TCallConfig
         raw: 'Raw list }
 
 /// Holds a policy and configuration for a Service Call, together with the state required to govern the incoming calls
-type CallPolicy<'TConfig,'Raw when 'TConfig: equality>(log, cfg : CallConfig<'TConfig,'Raw>) =
-    let makeGoverner cfg = Governor(log, cfg.callName, cfg.policyName, cfg.policyConfig)
+type CallPolicy<'TConfig,'Raw when 'TConfig: equality>(log, serviceName, callName, cfg : CallConfig<'TConfig,'Raw>) =
+    let makeGoverner cfg = Governor(log, serviceName, callName, cfg.policyName, cfg.policyConfig)
     let mutable cfg, governor = cfg, makeGoverner cfg
 
     /// Ingest an updated set of config values, reporting diffs, if any
@@ -223,11 +222,13 @@ type CallPolicy<'TConfig,'Raw when 'TConfig: equality>(log, cfg : CallConfig<'TC
 
 type ServiceConfig<'TConfig,'Raw> =
     {   defaultPolicyName: string option
-        callsMap: CallConfig<'TConfig,'Raw> list }
+        serviceName: string
+        callsMap: (string*CallConfig<'TConfig,'Raw>) list }
 
 /// Maintains a set of call policies for a service
 type ServicePolicy<'TConfig,'Raw when 'TConfig: equality> private
     (   log : Serilog.ILogger,
+        serviceName: string,
         defaultPolicyName : string option,
         calls: ConcurrentDictionary<string,CallPolicy<'TConfig,'Raw>>) =
     let mutable defaultPolicyName = defaultPolicyName
@@ -253,22 +254,22 @@ type ServicePolicy<'TConfig,'Raw when 'TConfig: equality> private
     /// Throws if policiesJson or mapJson fail to adhere to correct Json structure
     static member Create(log, cfg: ServiceConfig<'TConfig,'Raw>) =
         let inputs = seq {
-            for call in cfg.callsMap ->
-                KeyValuePair(call.callName, CallPolicy<_,_>(log, call)) }
-        ServicePolicy<_,_>(log, cfg.defaultPolicyName, ConcurrentDictionary inputs)
+            for callName,callCfg in cfg.callsMap ->
+                KeyValuePair(callName, CallPolicy<_,_>(log, cfg.serviceName, callName, callCfg)) }
+        ServicePolicy<_,_>(log, cfg.serviceName, cfg.defaultPolicyName, ConcurrentDictionary inputs)
 
     /// Processes as per Parse, but updates an existing ruleset, annotating any detected changes
     member __.UpdateFrom(cfg: ServiceConfig<'TConfig,'Raw>) =
         let updates = [
-            for cfg in cfg.callsMap do
+            for callName,cfg in cfg.callsMap do
                 let mutable changeLevel = None
-                let create () =
+                let create callName =
                     changeLevel <- Some ChangeLevel.Added
-                    CallPolicy(log, cfg)
-                calls.AddOrUpdate(cfg.callName, (fun _callName -> create ()), (fun _ current -> changeLevel <- current.TryUpdate(cfg); current)) |> ignore
+                    CallPolicy(log, serviceName, callName, cfg)
+                calls.AddOrUpdate(callName, (fun callName -> create callName), (fun _ current -> changeLevel <- current.TryUpdate(cfg); current)) |> ignore
                 match changeLevel with
                 | None -> ()
-                | Some changeLevel -> yield cfg.callName, changeLevel ]
+                | Some changeLevel -> yield callName, changeLevel ]
         defaultPolicyName <- cfg.defaultPolicyName
         updates
 

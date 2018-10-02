@@ -188,8 +188,8 @@ let parseInternal defsJson =
                 | false, _ -> raise <| NotFoundCallPolicyReferenceException(serviceName, callName, policyName, dumpDefs serviceDef)
                 | true, rules ->
                     let mapped = mapService [policyName; callName; serviceName] serviceDef rules |> List.ofSeq
-                    {   callName = callName
-                        policyName = policyName
+                    callName,
+                    {   policyName = policyName
                         policyConfig = inferPolicy mapped
                         callConfig = inferConfig mapped
                         raw = mapped }
@@ -204,7 +204,7 @@ let parseInternal defsJson =
                     Some Constants.defaultCallName, mapCall Constants.defaultCallName defPolName :: explicitCalls
                 | _ ->
                     None, explicitCalls
-            serviceName, { defaultPolicyName = defaultCallName; callsMap = callsMap } }
+            serviceName, { serviceName = serviceName; defaultPolicyName = defaultCallName; callsMap = callsMap } }
 
 let parse log defs : Policy<_,_> =
     let rulesMap = parseInternal defs
