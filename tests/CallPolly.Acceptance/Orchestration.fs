@@ -36,14 +36,17 @@ let policy = """{
         },
         "upstreamA": {
             "calls": {
-                "Call1": "default",
+                "Call1": "looser",
                 "Call2": "default",
                 "CallBroken": "defaultBroken"
             },
             "defaultPolicy": null,
             "policies": {
                 "default": [
-                    { "rule": "Limit",      "maxParallel": 1, "maxQueue": 3 }
+                    { "rule": "Limit",      "maxParallel": 10, "maxQueue": 3 }
+                ],
+                "looser": [
+                    { "rule": "Limit",      "maxParallel": 100, "maxQueue": 300 }
                 ],
                 "defaultBroken": [
                     { "rule": "Isolate" }
@@ -211,4 +214,18 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         // And even though the upstream is happy again, we fail
         let! Status res = sut.ApiTenSecondSla Succeed |> Async.Catch
         test <@ 503 = res @>
+    }
+
+    let [<Fact>] ``Limit - Bulkhead functionality`` () = async {
+        let policy = Parser.parse log policy
+        let sut = Sut(log, policy)
+        // 10 fails put it into circuit breaking mode - let's do 9 and the step carefully
+        let alternateBetweenTwoUpstreams i =
+            if i % 2 = 0 then sut.ApiOneSecondSla Succeed (DelayMs 100)
+            else sut.ApiOneSecondSla (DelayMs 100) Succeed
+            |> Async.Catch
+        let! time, res = List.init 1000 alternateBetweenTwoUpstreams |> Async.Parallel |> Stopwatch.Time
+        let counts = res |> Seq.countBy (function Status s -> s) |> Seq.sortBy fst |> List.ofSeq
+        test <@ match counts with [200,successCount; 503,rejectCount] -> successCount < 100 && rejectCount > 800 | x -> failwithf "%A" x @>
+        test <@ between 0.5 2. time.Elapsed.TotalSeconds @>
     }
