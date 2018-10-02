@@ -1,4 +1,4 @@
-﻿module CallPolly.Acceptance.Tests
+﻿module CallPolly.Acceptance.Orchestration
 
 open CallPolly
 open Swensen.Unquote
@@ -17,8 +17,7 @@ type SerilogHelpers.LogCaptureBuffer with
         buffer.Clear()
         actual
 
-let policy = """
-{
+let policy = """{
     "services": {
         "ingres": {
             "calls": {
@@ -120,6 +119,7 @@ type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_,_>) =
         return! upstreamB1 b1
     }
     let _apiBroken = upstreamA3 Succeed
+    member __.ApiManualBroken = _apiBroken
     member __.ApiOneSecondSla a1 a2 = run "ingres" "api-a" <| _apiA a1 a2
     member __.ApiTenSecondSla b1 = run "ingres" "api-b" <| _apiB b1
 
@@ -136,24 +136,31 @@ let (|Status|) : Choice<int,exn> -> int = function
     | Http504 -> 504
 
 /// Acceptance tests illustrating the indended use of CallPolly wrt implementing flow control within an orchestration layer
-type Orchestration(output : Xunit.Abstractions.ITestOutputHelper) =
+type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output
 
-    let [<Fact>] ``Cutoff can be used to cap call time when upstreams misbehave`` () = async {
+    let [<Fact>] ``Cutoff - can be used to cap call time when upstreams misbehave`` () = async {
         let policy = Parser.parse log policy
         let sut = Sut(log, policy)
         let! time, (Status res) = sut.ApiOneSecondSla Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
         test <@ res = 503 && between 1. 1.2 (time.Elapsed.TotalSeconds) @>
     }
 
-    let [<Fact>] ``Upstream timeouts can be mapped to 504s`` () = async {
+    let [<Fact>] ``Propagation - Upstream timeouts can be mapped to 504s`` () = async {
         let policy = Parser.parse log policy
         let sut = Sut(log, policy)
         let! Status res = sut.ApiTenSecondSla ThrowTimeout |> Async.Catch
         test <@ res = 504 @>
     }
 
-    let [<Fact>] ``Circuit breaking base functionality`` () = async {
+    let [<Fact>] ``Isolate - Manual circuit-breaking`` () = async {
+        let policy = Parser.parse log policy
+        let sut = Sut(log, policy)
+        let! Status res = sut.ApiManualBroken |> Async.Catch
+        test <@ res = 503 @>
+    }
+
+    let [<Fact>] ``Break - Circuit breaking base functionality`` () = async {
         let policy = Parser.parse log policy
         let sut = Sut(log, policy)
         // 10 fails put it into circuit breaking mode - let's do 9 and the step carefully
@@ -179,7 +186,7 @@ type Orchestration(output : Xunit.Abstractions.ITestOutputHelper) =
         test <@ 1 >= callsToUpstreamThatIsTimingOut logs @>
     }
 
-    let [<Fact>] ``Broken circuits can recover and be retriggered`` () = async {
+    let [<Fact>] ``Break - Broken circuits can recover and be retriggered`` () = async {
         let policy = Parser.parse log policy
         let sut = Sut(log, policy)
         // 10 fails put it into circuit breaking mode
