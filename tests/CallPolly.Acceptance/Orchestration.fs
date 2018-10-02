@@ -108,8 +108,8 @@ type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_,_>) =
     let _apiBroken = upstreamA3 Succeed
 
     let _apiB b1 = upstreamB1 b1
-    member __.ApiQuick a1 a2 = run "ingres" "api-a" <| _apiA a1 a2
-    member __.ApiSlow b1 = run "ingres" "api-b" <| _apiB b1
+    member __.ApiOneSecondSla a1 a2 = run "ingres" "api-a" <| _apiA a1 a2
+    member __.ApiTenSecondSla b1 = run "ingres" "api-b" <| _apiB b1
 
 let (|Http200|Http500|Http503|Http504|) : Choice<int,exn> -> _ = function
     | Choice1Of2 _ -> Http200
@@ -130,6 +130,13 @@ type Orchestration(output : Xunit.Abstractions.ITestOutputHelper) =
     let [<Fact>] ``Cutoff can be used to cap call time when upstreams misbehave`` () = async {
         let policy = Parser.parse log policy
         let sut = Sut(log, policy)
-        let! time, (Status res) = sut.ApiQuick Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
+        let! time, (Status res) = sut.ApiOneSecondSla Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
         test <@ res = 503 && between 1. 1.2 (time.Elapsed.TotalSeconds) @>
+    }
+
+    let [<Fact>] ``Upstream timeouts can be mapped to 504s`` () = async {
+        let policy = Parser.parse log policy
+        let sut = Sut(log, policy)
+        let! Status res = sut.ApiTenSecondSla ThrowTimeout |> Async.Catch
+        test <@ res = 504 @>
     }
