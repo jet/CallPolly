@@ -8,65 +8,18 @@ open System.Diagnostics
 open System.Threading
 open System.Threading.Tasks
 
-[<RequireQualifiedAccess>]
-type LogMode =
-    | Always
-    | Never
-    | OnlyWhenDebugEnabled
-
 type BreakerConfig = { window: TimeSpan; minThroughput: int; errorRateThreshold: float; retryAfter: TimeSpan; dryRun: bool }
 type BulkheadConfig = { dop: int; queue: int; dryRun: bool }
 type CutoffConfig = { timeout: TimeSpan; sla: TimeSpan option; dryRun: bool }
 type PolicyConfig = { isolate: bool; cutoff: CutoffConfig option; limit: BulkheadConfig option; breaker: BreakerConfig option }
-type CallConfiguration =
-    {   timeout: TimeSpan option; sla: TimeSpan option
-        ``base``: Uri option; rel: Uri option
-        reqLog: LogMode; resLog: LogMode }
 
-[<RequireQualifiedAccess>]
-type ActionRule =
-    | BaseUri of Uri: Uri
-    | RelUri of Uri: Uri
-    | Sla of sla: TimeSpan * timeout: TimeSpan
-    | Log of req: LogMode * res: LogMode
-    | Break of BreakerConfig
-    | Limit of BulkheadConfig
-    | Cutoff of CutoffConfig
-    | Isolate
-
-let inferPolicy : ActionRule seq -> PolicyConfig =
-    let folder s = function
-        | ActionRule.Isolate -> { s with isolate = true }
-        | ActionRule.Break breakerConfig -> { s with breaker = Some breakerConfig }
-        | ActionRule.Limit bulkheadConfig -> { s with limit = Some bulkheadConfig }
-        | ActionRule.Cutoff cutoffConfig -> { s with cutoff = Some cutoffConfig }
-        // Covered by inferConfig
-        | ActionRule.BaseUri _ | ActionRule.RelUri _ | ActionRule.Sla _ | ActionRule.Log _ -> s
-    Seq.fold folder { isolate = false; cutoff = None; limit = None; breaker = None }
-let inferConfig xs: CallConfiguration * Uri option =
-    let folder s = function
-        | ActionRule.BaseUri uri -> { s with ``base`` = Some uri }
-        | ActionRule.RelUri uri -> { s with rel = Some uri }
-        | ActionRule.Sla (sla=sla; timeout=t) -> { s with sla = Some sla; timeout = Some t }
-        | ActionRule.Log (req=reqLevel; res=resLevel) -> { s with reqLog = reqLevel; resLog = resLevel }
-        // Covered by inferPolicy
-        | ActionRule.Isolate | ActionRule.Cutoff _ | ActionRule.Limit _ | ActionRule.Break _ -> s
-    let def =
-        {   reqLog = LogMode.Never; resLog = LogMode.Never
-            timeout = None; sla = None
-            ``base`` = None; rel = None }
-    let config = Seq.fold folder def xs
-    let effectiveAddress =
-        match config.``base``, config.rel with
-        | None, u | u, None -> u
-        | Some b, Some r -> Uri(b,r) |> Some
-    config, effectiveAddress
-
-module ContextKeys =
-    let [<Literal>] action = "action"
+type GovernorState =
+    {   circuitState : string option
+        bulkheadAvailable : int option
+        queueAvailable : int option }
 
 /// Translates a PolicyConfig's rules to a Polly IAsyncPolicy instance that gets held in the ActionPolicy
-type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: string, config : PolicyConfig) =
+type Governor(log: Serilog.ILogger, actionName : string, policyName: string, config : PolicyConfig) =
     let logBreach sla interval = log |> Events.Log.cutoffSlaBreached policyName actionName sla interval
     let logTimeout (config: CutoffConfig) interval =
         let cfg = config.dryRun, ({ timeout = config.timeout; sla = Option.toNullable config.sla } : Events.CutoffParams)
@@ -157,7 +110,8 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
         | _ ->
             invalidOp "not possible"
             Some () // Compiler gets too clever if we never return Some
-    /// Execute and/or an invocation of a function with the relevant policy applied
+
+    /// Execute and/or log failures regarding invocation of a function with the relevant policy applied
     member __.Execute(inner : Async<'a>) : Async<'a> =
         match asyncPolicy with
         | None -> inner
@@ -216,87 +170,160 @@ type ActionGovernor(log: Serilog.ILogger, actionName : string, policyName: strin
                         | Some sla, elapsed when elapsed > sla -> logBreach sla processingInterval
                         | _ -> () }
 
-type [<RequireQualifiedAccess>] ChangeLevel = Added |  CallConfigurationOnly | ConfigAndPolicy
-type ActionPolicy(log, actionName, policyName, actionRules) =
-    let makePolicyConfig rules = inferPolicy rules
-    let mutable actionRules, policyConfig = actionRules, makePolicyConfig actionRules
-    let makeGoverner () = ActionGovernor(log,  actionName, policyName, policyConfig)
-    let mutable governor : ActionGovernor = makeGoverner()
-    let updateConfig newConfig =
-        policyConfig <- newConfig
-        governor <- makeGoverner()
+    /// Diagnostic state
+    member __.InternalState : GovernorState =
+        {   circuitState = maybeCb |> Option.map (fun cb -> string cb.CircuitState)
+            bulkheadAvailable = maybeBulkhead |> Option.map (fun bh -> bh.BulkheadAvailableCount)
+            queueAvailable = maybeBulkhead |> Option.map (fun bh -> bh.QueueAvailableCount) }
 
-    member __.ActionRules = actionRules
-    member __.PolicyConfig : PolicyConfig = policyConfig
-    member __.CallConfig : CallConfiguration * Uri option =
-        inferConfig actionRules
-    member __.TryUpdateFrom rules =
-        if actionRules = rules then
-            None
-        else
-            actionRules <- rules
-            match makePolicyConfig rules with
-            | newPol when newPol = policyConfig ->
-                Some ChangeLevel.CallConfigurationOnly
-            | newPol ->
-                updateConfig newPol
-                Some ChangeLevel.ConfigAndPolicy
+type [<RequireQualifiedAccess>] ChangeLevel = Added | ConfigurationAndPolicy | Configuration | Policy
+
+type CallConfig<'TCallConfig, 'Raw> =
+    {   callName: string
+        policyName: string
+        policyConfig: PolicyConfig
+        callConfig: 'TCallConfig
+        raw: 'Raw list }
+
+/// Holds a policy and configuration for a Service Call, together with the state required to govern the incoming calls
+type CallPolicy<'TConfig,'Raw when 'TConfig: equality>(log, cfg : CallConfig<'TConfig,'Raw>) =
+    let makeGoverner cfg = Governor(log, cfg.callName, cfg.policyName, cfg.policyConfig)
+    let mutable cfg, governor = cfg, makeGoverner cfg
+
+    /// Ingest an updated set of config values, reporting diffs, if any
+    member __.TryUpdate(updated : CallConfig<_,_>) =
+        let changes =
+            match updated.policyConfig = cfg.policyConfig, updated.callConfig = cfg.callConfig with
+            | true, true -> Some ChangeLevel.ConfigurationAndPolicy
+            | true, false -> Some ChangeLevel.Configuration
+            | false, true -> Some ChangeLevel.Policy
+            | false, false -> None
+
+        match changes with
+        | Some ChangeLevel.ConfigurationAndPolicy | Some ChangeLevel.Policy ->
+            governor <- makeGoverner updated
+            cfg <- updated
+        | Some ChangeLevel.Configuration ->
+            cfg <- updated
+        | _ -> ()
+
+        changes
+
+    member __.Policy = cfg.policyConfig
+    member __.Config = cfg.callConfig
+    member __.Raw = cfg.raw
+
+    /// Execute the call, apply the policy rules
     member __.Execute(inner : Async<'t>) =
-       governor.Execute inner
+        governor.Execute inner
 
-type UpstreamPolicyWithoutDefault private(log : Serilog.ILogger, map: ConcurrentDictionary<string,ActionPolicy>) =
-    static let mkActionPolicy log actionName policyName rules = ActionPolicy(log, actionName, policyName, rules)
+    /// Facilitates dumping for diagnostics
+    member __.InternalState =
+        cfg, governor.InternalState
 
-    /// Searches for the Policy associated with Action name`
-    member __.TryFind actionName : ActionPolicy option =
-        match map.TryGetValue actionName with
-        | true, rules -> Some rules
+type ServiceConfig<'TConfig,'Raw> =
+    {   defaultPolicyName: string option
+        callsMap: CallConfig<'TConfig,'Raw> list }
+
+/// Maintains a set of call policies for a service
+type ServicePolicy<'TConfig,'Raw when 'TConfig: equality> private
+    (   log : Serilog.ILogger,
+        defaultPolicyName : string option,
+        calls: ConcurrentDictionary<string,CallPolicy<'TConfig,'Raw>>) =
+    let mutable defaultPolicyName = defaultPolicyName
+
+    /// Searches for the CallPolicy associated with `call`
+    member __.TryFind(callName : string) =
+        match calls.TryGetValue callName with
+        | true, callPolicy -> Some callPolicy
         | false, _ -> None
+
+    /// Searches for the default CallPolicy defined for this service (if any)
+    member __.TryDefaultPolicy() : CallPolicy<'TConfig,'Raw> option =
+        match defaultPolicyName with
+        | None -> None
+        | Some def ->
+            match calls.TryGetValue def with
+            | true, callPolicy -> Some callPolicy
+            | false, _ -> None
 
     /// Attempts to parse
     /// - Policies: mapping of policy name to arrays of Rules, defined by the json in `policiesJson`
     /// - Map: the mappings of Action names to items in the Policies, defined by the json in `mapJson`
     /// Throws if policiesJson or mapJson fail to adhere to correct Json structure
-    static member Parse(log, rulesMap : (string * string * ActionRule list) seq) =
-        let inputs = seq { for actionName, policyName, rules in rulesMap -> KeyValuePair(actionName, mkActionPolicy log actionName policyName rules) }
-        UpstreamPolicyWithoutDefault(log, ConcurrentDictionary inputs)
+    static member Create(log, cfg: ServiceConfig<'TConfig,'Raw>) =
+        let inputs = seq {
+            for call in cfg.callsMap ->
+                KeyValuePair(call.callName, CallPolicy<_,_>(log, call)) }
+        ServicePolicy<_,_>(log, cfg.defaultPolicyName, ConcurrentDictionary inputs)
 
     /// Processes as per Parse, but updates an existing ruleset, annotating any detected changes
-    member __.UpdateFrom(rulesMap : (string * string * ActionRule list) seq) =
-        let rulesMap = rulesMap |> Seq.cache
-        seq { for actionName, policyName, rules in rulesMap do
+    member __.UpdateFrom(cfg: ServiceConfig<'TConfig,'Raw>) =
+        let updates = [
+            for cfg in cfg.callsMap do
                 let mutable changeLevel = None
-                let add policyName =
+                let create () =
                     changeLevel <- Some ChangeLevel.Added
-                    mkActionPolicy log actionName policyName rules
-                let tryUpdate (current : ActionPolicy) =
-                    changeLevel <- current.TryUpdateFrom rules
-                    current
-                map.AddOrUpdate(actionName, (fun _actionName -> add policyName), fun _ current -> tryUpdate current) |> ignore
+                    CallPolicy(log, cfg)
+                calls.AddOrUpdate(cfg.callName, (fun _callName -> create ()), (fun _ current -> changeLevel <- current.TryUpdate(cfg); current)) |> ignore
                 match changeLevel with
                 | None -> ()
-                | Some changeLevel -> yield actionName, changeLevel }
+                | Some changeLevel -> yield cfg.callName, changeLevel ]
+        defaultPolicyName <- cfg.defaultPolicyName
+        updates
+
     /// Facilitates dumping for diagnostics
-    member __.InternalState = map
+    member __.InternalState = seq {
+        for KeyValue(callName, call) in calls ->
+            callName, call.InternalState
+    }
 
-/// Defines a Policy that includes a fallback policy for Actions without a specific rule
-type UpstreamPolicy private(inner: UpstreamPolicyWithoutDefault, defaultPolicy: ActionPolicy) =
-    /// Determines the Rules to be applied for the Action `name`
-    /// Throws InvalidOperationException if no rule found for `name` and no mapping provided for a `(default)` action
-    member __.Find action : ActionPolicy =
-        match inner.TryFind action with
-        | Some actionPolicy -> actionPolicy
-        | None -> defaultPolicy
+/// Maintains an application-wide set of service policies, together with their policies, configuration and policy-state
+type Policy<'TConfig,'Raw when 'TConfig : equality> private(log, services: ConcurrentDictionary<string,ServicePolicy<'TConfig,'Raw>>) =
 
-    /// Attempts to parse as per a normal Policy, throws if a ruleset entitled `defaultLabel` is not present in the set
-    static member Parse(log, rulesMap : (string * string * ActionRule list) seq, defaultName) =
-        let inner = UpstreamPolicyWithoutDefault.Parse(log, rulesMap)
-        let def =
-           match inner.TryFind defaultName with
-            | None -> invalidOp (sprintf "Could not find a default policy entitled '%s'" defaultName)
-            | Some defPol -> defPol
-        UpstreamPolicy(inner, def)
+    /// Initialize the policy from an initial set of configs
+    static member Create(log, cfgs: (string * ServiceConfig<'TConfig,'Raw>) seq) =
+        let inputs = seq {
+            for service, cfg in cfgs ->
+                KeyValuePair(service, ServicePolicy<_,_>.Create(log, cfg)) }
+        Policy<'TConfig,'Raw>(log, ConcurrentDictionary<_,_> inputs)
+
     /// Processes as per Parse, but updates an existing ruleset, annotating any detected changes
-    member __.UpdateFrom rulesMap = inner.UpdateFrom rulesMap
-    /// Facilitates dumping for diagnostics
-    member __.InternalState = inner.InternalState
+    member __.UpdateFrom(cfgs: (string * ServiceConfig<_,_>) seq) =
+        let updates = ResizeArray()
+        for name, cfg in cfgs do
+            let create () =
+                ServicePolicy<_,_>.Create(log, cfg)
+            let tryUpdate (current : ServicePolicy<_,_>) =
+                updates.Add(name, current.UpdateFrom cfg)
+                current
+            services.AddOrUpdate(name, (fun _callName -> create ()), fun _ current -> tryUpdate current) |> ignore
+        updates.ToArray() |> List.ofArray
+
+    /// Attempts to find the policy for the specified `call` in the specified `service`
+    member __.TryFind(service, call) : CallPolicy<_,_> Option =
+        match services.TryGetValue service with
+        | false, _ -> None
+        | true, sp ->
+            match sp.TryFind call with
+            | Some cp -> Some cp
+            | None -> None
+
+    /// Finds the policy for the specified `call` in the specified `service`
+    /// Throws InvalidOperationException if `service` not found
+    /// Throws InvalidOperationException if `call` not defined in ServicePolicy and no default CallPolicy nominated
+    member __.Find(service, call) : CallPolicy<_,_> =
+        match services.TryGetValue service with
+        | false, _ -> invalidOp <| sprintf "Undefined service '%s'" service
+        | true, sp ->
+            match sp.TryFind call with
+            | Some cp -> cp
+            | None ->
+                match sp.TryDefaultPolicy() with
+                | None -> invalidOp <| sprintf "Service '%s' does not define a default call policy" service
+                | Some dp -> dp
+
+    /// Facilitates dumping all Service Configs for diagnostics
+    member __.InternalState = seq {
+        for KeyValue(serviceName, service) in services ->
+            serviceName, service.InternalState }

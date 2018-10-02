@@ -11,104 +11,128 @@ module Helpers =
     let ms x = TimeSpan.FromMilliseconds (float x)
     let s x = TimeSpan.FromSeconds (float x)
     let between min max (value : int) = value >= min && value <= max
+    let hasChanged (serviceName : string) (call:string) (changeLevel:Rules.ChangeLevel) updated =
+        updated |> List.exists (function sn,changes -> sn = serviceName && changes |> List.contains (call,changeLevel))
 
 module Core =
-    let pols = """{
-      "defaultLog": [
-        { "ruleName": "Log",        "req": "OnlyWhenDebugEnabled", "res": "OnlyWhenDebugEnabled" }
-      ],
-      "default": [
-        { "ruleName": "Include",    "policyName": "defaultLog" },
-        { "ruleName": "Sla",        "slaMs": 1000, "timeoutMs": 5000 }
-      ],
-      "edd": [
-        { "ruleName": "Uri",        "base": "http://base" },
-        { "ruleName": "Include",    "policyName": "default" }
-      ],
-      "limit": [
-        { "ruleName": "Limit",      "maxParallel": 2, "maxQueue": 3, "dryRun": true }
-      ],
-      "break": [
-        { "ruleName": "Break",      "windowS": 5, "minRequests": 100, "failPct": 20, "breakS": 1 }
-      ],
-      "defaultBroken": [
-        { "ruleName": "Isolate" }
-      ],
-      "cutoff": [
-        { "ruleName": "Cutoff",     "timeoutMs": 500, "dryRun": true }
-      ],
-      "heavy": [
-        { "ruleName": "Include",    "policyName": "defaultLog" },
-        { "ruleName": "Include",    "policyName": "limit" },
-        { "ruleName": "Include",    "policyName": "break" },
-        { "ruleName": "Include",    "policyName": "cutoff" },
-        { "ruleName": "Sla",        "slaMs": 5000, "timeoutMs": 10000 },
-        { "ruleName": "Include",    "policyName": "defaultBroken" }
-      ],
-      "UnknownUnknown": [
-        { "ruleName": "NotYetImplemented" }
-      ]
-    }"""
+    let defs = """{ "services": { "default": {
+        "calls": {
+            "(defaultLog)": "defaultLog",
+            "checkout": "heavy",
+            "placeOrder": "heavy",
+            "EstimatedDeliveryDates": "edd",
+            "EstimatedDeliveryDate": "defaultBroken"
+        },
+        "defaultPolicy": "default",
+        "policies": {
+            "defaultLog": [
+                { "rule": "Log",        "req": "OnlyWhenDebugEnabled", "res": "OnlyWhenDebugEnabled" }
+            ],
+            "default": [
+                { "rule": "Include",    "policy": "defaultLog" },
+                { "rule": "Sla",        "slaMs": 1000, "timeoutMs": 5000 }
+            ],
+            "edd": [
+                { "rule": "Uri",        "base": "http://base" },
+                { "rule": "Include",    "policy": "default" }
+                ],
+            "limit": [
+                { "rule": "Limit",      "maxParallel": 2, "maxQueue": 3, "dryRun": true }
+            ],
+            "break": [
+                { "rule": "Break",      "windowS": 5, "minRequests": 100, "failPct": 20, "breakS": 1 }
+            ],
+            "defaultBroken": [
+                { "rule": "Isolate" }
+            ],
+            "cutoff": [
+                { "rule": "Cutoff",     "timeoutMs": 500, "dryRun": true }
+            ],
+            "heavy": [
+                { "rule": "Include",    "policy": "defaultLog" },
+                { "rule": "Include",    "policy": "limit" },
+                { "rule": "Include",    "policy": "break" },
+                { "rule": "Include",    "policy": "cutoff" },
+                { "rule": "Sla",        "slaMs": 5000, "timeoutMs": 10000 },
+                { "rule": "Include",    "policy": "defaultBroken" }
+            ],
+            "UnknownUnknown": [
+                { "rule": "NotYetImplemented" }
+            ]
+        }
+}}}"""
 
-    let map = """{
-      "(default)": "default",
-      "(defaultLog)": "defaultLog",
-      "checkout": "heavy",
-      "placeOrder": "heavy",
-      "EstimatedDeliveryDates": "edd",
-      "EstimatedDeliveryDate": "defaultBroken"
-    }"""
+    let baseUri = Uri "http://base"
+    let baseRule = Parser.ActionRule.BaseUri baseUri
 
-    let baseUri = Rules.ActionRule.BaseUri (Uri "http://base")
-
-    let logRule = Rules.ActionRule.Log (Rules.LogMode.OnlyWhenDebugEnabled, Rules.LogMode.OnlyWhenDebugEnabled)
+    let logRule = Parser.ActionRule.Log (Parser.LogMode.OnlyWhenDebugEnabled, Parser.LogMode.OnlyWhenDebugEnabled)
     let limitConfig : Rules.BulkheadConfig = { dop=2; queue=3; dryRun=true }
-    let limitRule = Rules.ActionRule.Limit limitConfig
+    let limitRule = Parser.ActionRule.Limit limitConfig
     let breakConfig : Rules.BreakerConfig = { window = s 5; minThroughput = 100; errorRateThreshold = 0.2; retryAfter = s 1; dryRun = false }
-    let breakRule = Rules.ActionRule.Break breakConfig
+    let breakRule = Parser.ActionRule.Break breakConfig
     let cutoffConfig : Rules.CutoffConfig = { timeout = ms 500; sla = None; dryRun = true }
-    let cutoffRule = Rules.ActionRule.Cutoff cutoffConfig
+    let cutoffRule = Parser.ActionRule.Cutoff cutoffConfig
+    let defConfig : Parser.CallConfiguration * Uri option =
+        {   timeout = Some (s 5); sla = Some (s 1)
+            ``base`` = Some baseUri; rel = None
+            reqLog = Parser.LogMode.OnlyWhenDebugEnabled; resLog = Parser.LogMode.OnlyWhenDebugEnabled },
+        Some baseUri
+    let noRules = { isolate = false; cutoff = None; limit = None; breaker = None; }
+    let heavyConfig : Parser.CallConfiguration * Uri option =
+        {   timeout = Some (s 10); sla = Some (s 5)
+            ``base`` = None; rel = None
+            reqLog = Parser.LogMode.OnlyWhenDebugEnabled; resLog = Parser.LogMode.OnlyWhenDebugEnabled },
+        None
+    let heavyRules = { isolate = true; cutoff = Some cutoffConfig; limit = Some limitConfig; breaker = Some breakConfig }
 
     /// Base tests exercising core functionality
     type Core(output : Xunit.Abstractions.ITestOutputHelper) =
         let log = LogHooks.createLogger output
 
-        let [<Fact>] ``UpstreamPolicyWithoutDefault happy path`` () =
-            let pol = Parser.parseUpstreamPolicyWithoutDefault log pols map
-            let tryFindActionRules actionName = pol.TryFind actionName |> Option.map (fun x -> x.ActionRules)
-            test <@ Some [ baseUri; logRule; Rules.ActionRule.Sla (ms 1000, ms 5000)] = tryFindActionRules "EstimatedDeliveryDates" @>
-            test <@ Some [ logRule; limitRule; breakRule; cutoffRule; Rules.ActionRule.Sla (ms 5000, ms 10000); Rules.ActionRule.Isolate] = tryFindActionRules "placeOrder" @>
-            test <@ None = pol.TryFind "missing" @>
+        let [<Fact>] ``Policy TryFind happy path`` () =
+            let pol = Parser.parse log defs
+            let tryFindActionRules actionName =
+                pol.TryFind("default",actionName)
+                |> Option.map (fun x -> x.Raw, x.Config, x.Policy)
+            let eddRaw, eddCfg, eddRules = trap <@ tryFindActionRules "EstimatedDeliveryDates" |> Option.get @>
+            test <@ [baseRule; logRule; Parser.ActionRule.Sla (ms 1000, ms 5000)] = eddRaw
+                    && defConfig = eddCfg
+                    && noRules = eddRules @>
+            let poRaw, poCfg, poRules = trap <@ tryFindActionRules "placeOrder" |> Option.get @>
+            test <@ [logRule; limitRule; breakRule; cutoffRule; Parser.ActionRule.Sla (ms 5000, ms 10000); Parser.ActionRule.Isolate] = poRaw
+                    && heavyConfig = poCfg
+                    && heavyRules = poRules @>
+            test <@ None = tryFindActionRules "missing" @>
 
-        let [<Fact>] ``UpstreamPolicy Happy path`` () =
-            let pol = Parser.parseUpstreamPolicy log pols map
-            let defaultLog = pol.Find("(defaultLog)").ActionRules
-            let default_ = pol.Find("shouldDefault").ActionRules
-            let findActionRules actionName = pol.Find(actionName).ActionRules
-            test <@ baseUri :: default_ = findActionRules "EstimatedDeliveryDates" @>
-            test <@ [Rules.ActionRule.Isolate] = findActionRules "EstimatedDeliveryDate" @>
-            test <@ defaultLog @ [limitRule; breakRule; cutoffRule; Rules.ActionRule.Sla (ms 5000, ms 10000); Rules.ActionRule.Isolate] = findActionRules "placeOrder" @>
+        let [<Fact>] ``Policy Find Happy path`` () =
+            let pol = Parser.parse log defs
+            let defaultLog = pol.Find("default","(defaultLog)").Raw
+            let default_ = pol.Find("default","shouldDefault").Raw
+            let findActionRules actionName = pol.Find("default",actionName).Raw
+            test <@ baseRule :: default_ = findActionRules "EstimatedDeliveryDates" @>
+            test <@ [Parser.ActionRule.Isolate] = findActionRules "EstimatedDeliveryDate" @>
+            test <@ defaultLog @ [limitRule; breakRule; cutoffRule; Parser.ActionRule.Sla (ms 5000, ms 10000); Parser.ActionRule.Isolate] = findActionRules "placeOrder" @>
             test <@ default_ = findActionRules "unknown" @>
-            let heavyPolicy = pol.Find "placeOrder"
-            test <@ heavyPolicy.PolicyConfig.isolate
-                    && Some breakConfig = heavyPolicy.PolicyConfig.breaker @>
+            let heavyPolicy = pol.Find("default","placeOrder")
+            test <@ heavyPolicy.Policy.isolate
+                    && Some breakConfig = heavyPolicy.Policy.breaker @>
 
         let [<Fact>] ``UpstreamPolicy Update management`` () =
-            let pol = Parser.parseUpstreamPolicy log pols map
-            let heavyPolicy = pol.Find "placeOrder"
-            test <@ heavyPolicy.PolicyConfig.isolate
-                    && Some breakConfig = heavyPolicy.PolicyConfig.breaker @>
+            let pol = Parser.parse log defs
+            let heavyPolicy = pol.Find("default","placeOrder")
+            test <@ heavyPolicy.Policy.isolate
+                    && Some breakConfig = heavyPolicy.Policy.breaker @>
             let updated =
-                let polsWithDifferentAdddress = pols.Replace("http://base","http://base2")
-                pol |> Parser.updateFrom polsWithDifferentAdddress map |> List.ofSeq
-            test <@ updated |> List.contains ("EstimatedDeliveryDates",Rules.ChangeLevel.CallConfigurationOnly)
-                    && heavyPolicy.PolicyConfig.isolate @>
+                let polsWithDifferentAdddress = defs.Replace("http://base","http://base2")
+                pol |> Parser.updateFrom polsWithDifferentAdddress |> List.ofSeq
+            test <@ updated |> hasChanged "default" "EstimatedDeliveryDates" Rules.ChangeLevel.Configuration
+                    && heavyPolicy.Policy.isolate @>
             let updated =
-                let polsWithIsolateMangledAndBackToOriginalBaseAddress = pols.Replace("Isolate","isolate")
-                pol |> Parser.updateFrom polsWithIsolateMangledAndBackToOriginalBaseAddress map |> List.ofSeq
-            test <@ updated |> List.contains ("EstimatedDeliveryDates",Rules.ChangeLevel.CallConfigurationOnly)
-                    && updated |> List.contains ("placeOrder",Rules.ChangeLevel.ConfigAndPolicy)
-                    && not heavyPolicy.PolicyConfig.isolate @>
+                let polsWithIsolateMangledAndBackToOriginalBaseAddress = defs.Replace("Isolate","isolate")
+                pol |> Parser.updateFrom polsWithIsolateMangledAndBackToOriginalBaseAddress |> List.ofSeq
+            test <@ updated |> hasChanged "default" "EstimatedDeliveryDates" Rules.ChangeLevel.Configuration
+                    && updated |> hasChanged "default" "placeOrder" Rules.ChangeLevel.Policy
+                    && not heavyPolicy.Policy.isolate @>
 
 [<AutoOpen>]
 module SerilogExtractors =
@@ -186,57 +210,59 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
     let expectedLimitRules : Rules.BulkheadConfig = { dop = 2; queue = 3; dryRun = true }
 
     let [<Fact>] ``takes precedence over, but does not conceal Break, Limit or Timeout; logging only reflects Isolate rule`` () = async {
-        let pol = Parser.parseUpstreamPolicy log Core.pols Core.map
-        let ap = pol.Find "placeOrder"
-        test <@ ap.PolicyConfig.isolate
-                && Some Core.breakConfig = ap.PolicyConfig.breaker
-                && Some Core.cutoffConfig = ap.PolicyConfig.cutoff
-                && Some expectedLimitRules = ap.PolicyConfig.limit @>
+        let pol = Parser.parse log Core.defs
+        let ap = pol.Find("default","placeOrder")
+        test <@ ap.Policy.isolate
+                && Some Core.breakConfig = ap.Policy.breaker
+                && Some Core.cutoffConfig = ap.Policy.cutoff
+                && Some expectedLimitRules = ap.Policy.limit @>
         let call = async { return 42 }
         let! result = ap.Execute(call) |> Async.Catch
         test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
         [Isolated ("heavy","placeOrder")] =! buffer.Take()
         let updated =
-            let polsWithIsolateMangled = Core.pols.Replace("Isolate","isolate")
-            pol |> Parser.updateFrom polsWithIsolateMangled Core.map |> List.ofSeq
-        test <@ updated |> List.contains ("placeOrder",Rules.ChangeLevel.ConfigAndPolicy)
-                && not ap.PolicyConfig.isolate @>
+            let polsWithIsolateMangled = Core.defs.Replace("Isolate","isolate")
+            pol |> Parser.updateFrom polsWithIsolateMangled |> List.ofSeq
+        test <@ updated |> hasChanged "default" "placeOrder" Rules.ChangeLevel.Policy
+                && not ap.Policy.isolate @>
         let! result = ap.Execute(call) |> Async.Catch
         test <@ Choice1Of2 42 = result @>
         [] =! buffer.Take() }
 
-    let isolatePols = """{
-      "default": [
-        { "ruleName": "Isolate"  }
-      ]
-    }"""
-    let isolateMap = """{
-      "(default)": "default",
-      "nonDefault": "default"
-    }"""
+    let isolateDefs = """{ "services": { "default": {
+        "calls": {
+            "nonDefault": "default"
+        },
+        "defaultPolicy": "default",
+        "policies": {
+            "default": [
+                { "rule": "Isolate"  }
+            ]
+        }
+}}}"""
 
     let [<Fact>] ``When on, throws and logs information`` () = async {
-        let pol = Parser.parseUpstreamPolicy log isolatePols isolateMap
-        let ap = pol.Find "notFound"
-        test <@ ap.PolicyConfig.isolate && None = ap.PolicyConfig.breaker @>
+        let pol = Parser.parse log isolateDefs
+        let ap = pol.Find("default","notFound")
+        test <@ ap.Policy.isolate && None = ap.Policy.breaker @>
         let call = async { return 42 }
         let! result = ap.Execute(call) |> Async.Catch
         test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
         [Isolated ("default","(default)")] =! buffer.Take() }
 
     let [<Fact>] ``when removed, stops intercepting processing, does not log`` () = async {
-        let pol = Parser.parseUpstreamPolicy log isolatePols isolateMap
-        let ap = pol.Find "nonDefault"
-        test <@ ap.PolicyConfig.isolate && None = ap.PolicyConfig.breaker @>
+        let pol = Parser.parse log isolateDefs
+        let ap = pol.Find("default","nonDefault")
+        test <@ ap.Policy.isolate && None = ap.Policy.breaker @>
         let call = async { return 42 }
         let! result = ap.Execute(call) |> Async.Catch
         test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.IsolatedCircuitException) -> true | _ -> false @>
         [Isolated ("default","nonDefault")] =! buffer.Take()
         let updated =
-            let polsWithIsolateMangled = isolatePols.Replace("Isolate","isolate")
-            pol |> Parser.updateFrom polsWithIsolateMangled isolateMap |> List.ofSeq
-        test <@ updated |> List.contains ("(default)",Rules.ChangeLevel.ConfigAndPolicy)
-                && not ap.PolicyConfig.isolate @>
+            let polsWithIsolateMangled = isolateDefs.Replace("Isolate","isolate")
+            pol |> Parser.updateFrom polsWithIsolateMangled |> List.ofSeq
+        test <@ updated |> hasChanged "default" "nonDefault" Rules.ChangeLevel.Policy
+                && not ap.Policy.isolate @>
         let! result = ap.Execute(call) |> Async.Catch
         test <@ Choice1Of2 42 = result @>
         [] =! buffer.Take() }
@@ -244,31 +270,24 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
 type Break(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output
 
-    let pols = """{
-      "default": [
-        {
-          "ruleName": "Break",
-          "windowS": 5,
-          "minRequests": 2,
-          "failPct": 50,
-          "breakS": .5,
-          "dryRun": false
+    let defs = """{ "services": { "default": {
+        "calls": {},
+        "defaultPolicy": "default",
+        "policies": {
+            "default": [
+                { "rule": "Break", "windowS": 5, "minRequests": 2, "failPct": 50, "breakS": .5, "dryRun": false }
+            ]
         }
-      ]
-    }"""
-    let dryRunPols = pols.Replace("false","true")
+}}}"""
+    let dryRunDefs = defs.Replace("false","true")
 
     let expectedRules : Rules.BreakerConfig = { window = s 5; minThroughput = 2; errorRateThreshold = 0.5; retryAfter = TimeSpan.FromSeconds 0.5; dryRun = false }
 
-    let map = """{
-      "(default)": "default",
-    }"""
-
     let [<Fact>] ``applies break constraints, logging each application and status changes appropriately`` () = async {
-        let pol = Parser.parseUpstreamPolicy log pols map
-        let ap = pol.Find "notFound"
-        test <@ not ap.PolicyConfig.isolate
-                && Some expectedRules = ap.PolicyConfig.breaker @>
+        let pol = Parser.parse log defs
+        let ap = pol.Find("default","notFound")
+        test <@ not ap.Policy.isolate
+                && Some expectedRules = ap.Policy.breaker @>
         let runTimeout = async {
             let timeout = async { return raise <| TimeoutException() }
             let! result = ap.Execute(timeout) |> Async.Catch
@@ -294,15 +313,15 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
         [Call ("(default)",Breaking)] =! buffer.Take()
         do! shouldBeOpen
         // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
-        let changedRules = pols.Replace(".5","5")
-        pol |> Parser.updateFrom changedRules map |> ignore
+        let changedRules = defs.Replace(".5","5")
+        pol |> Parser.updateFrom changedRules |> ignore
         do! shouldBeOpen }
 
     let [<Fact>] ``dryRun mode prevents breaking, logs status changes appropriately`` () = async {
-        let pol = Parser.parseUpstreamPolicy log dryRunPols map
-        let ap = pol.Find "notFound"
-        test <@ not ap.PolicyConfig.isolate
-                && Some { expectedRules with dryRun = true } = ap.PolicyConfig.breaker @>
+        let pol = Parser.parse log dryRunDefs
+        let ap = pol.Find("default","notFound")
+        test <@ not ap.Policy.isolate
+                && Some { expectedRules with dryRun = true } = ap.Policy.breaker @>
         let runTimeout = async {
             let timeout = async { return raise <| TimeoutException() }
             let! result = ap.Execute(timeout) |> Async.Catch
@@ -323,8 +342,8 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
         do! runTimeout // 3/6 failed -> break
         [Call ("(default)",BreakingDryRun)] =! buffer.Take()
         // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
-        let changedRules = pols.Replace(".5","5")
-        pol |> Parser.updateFrom changedRules map |> ignore
+        let changedRules = defs.Replace(".5","5")
+        pol |> Parser.updateFrom changedRules |> ignore
         do! runSuccess
         do! runSuccess
         // 1/2 failed (if the timeout happened in between the two successes, it would fail)
@@ -334,20 +353,16 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
 type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output
 
-    let pols = """{
-      "default": [
-        {
-          "ruleName": "Limit",
-          "maxParallel": 2,
-          "maxQueue": 3,
-          "dryRun": false
+    let defs = """{ "services": { "default": {
+        "calls": {},
+        "defaultPolicy": "default",
+        "policies": {
+            "default": [
+                { "rule": "Limit", "maxParallel": 2, "maxQueue": 3, "dryRun": false }
+            ]
         }
-      ]
-    }"""
-    let map = """{
-      "(default)": "default"
-    }"""
-    let dryRunPols = pols.Replace("false","true")
+}}}"""
+    let dryRunDefs = defs.Replace("false","true")
     let expectedRules : Rules.BulkheadConfig = { dop = 2; queue = 3; dryRun = false }
 
     let runError = async {
@@ -358,10 +373,10 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
         return 42 }
 
     let [<Fact>] ``dryRun mode does not inhibit processing`` () = async {
-        let pol = Parser.parseUpstreamPolicy log dryRunPols map
-        let ap = pol.Find "any"
-        test <@ not ap.PolicyConfig.isolate
-                && Some { expectedRules with dryRun = true } = ap.PolicyConfig.limit @>
+        let pol = Parser.parse log dryRunDefs
+        let ap = pol.Find("default","any")
+        test <@ not ap.Policy.isolate
+                && Some { expectedRules with dryRun = true } = ap.Policy.limit @>
         let! time, results =
             seq { for x in 0..5 -> if x % 2 = 0 then runError else runOk }
             |> Seq.mapi (fun i f -> async {
@@ -387,9 +402,9 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
                 && 1 = Array.length shed @> }
 
     let [<Fact>] ``when active, sheds load above limit`` () = async {
-        let pol = Parser.parseUpstreamPolicy log pols map
-        let ap = pol.Find "any"
-        test <@ not ap.PolicyConfig.isolate && Some expectedRules = ap.PolicyConfig.limit @>
+        let pol = Parser.parse log defs
+        let ap = pol.Find("default","any")
+        test <@ not ap.Policy.isolate && Some expectedRules = ap.Policy.limit @>
         let! time, results =
             Seq.replicate 6 runOk
             // Catch inside so the first throw doesnt cancel the overall execution
@@ -417,15 +432,16 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
 type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output
 
-    let pols = """{
-      "default": [
-        { "ruleName": "Cutoff", "timeoutMs": 1000, "slaMs": 500, "dryRun": false }
-      ]
-    }"""
-    let map = """{
-      "(default)": "default"
-    }"""
-    let dryRunPols = pols.Replace("false","true")
+    let defs = """{ "services": { "default": {
+        "calls": {},
+        "defaultPolicy": "default",
+        "policies": {
+            "default": [
+                { "rule": "Cutoff", "timeoutMs": 1000, "slaMs": 500, "dryRun": false }
+            ]
+        }
+}}}"""
+    let dryRunDefs = defs.Replace("false","true")
     let expectedRules : Rules.CutoffConfig = { timeout = ms 1000; sla = Some (ms 500); dryRun = false }
 
     // Replacing sleep with Async.SleepWrong below demonstrates what a failure to honor cancellation will result in
@@ -444,10 +460,10 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
         return 42 }
 
     let [<Fact>] ``dryRun mode does not inhibit processing`` () = async {
-        let pol = Parser.parseUpstreamPolicy log dryRunPols map
-        let ap = pol.Find "any"
-        test <@ not ap.PolicyConfig.isolate
-                && Some { expectedRules with dryRun = true } = ap.PolicyConfig.cutoff @>
+        let pol = Parser.parse log dryRunDefs
+        let ap = pol.Find("default","any")
+        test <@ not ap.Policy.isolate
+                && Some { expectedRules with dryRun = true } = ap.Policy.cutoff @>
         let r = Random()
         let! time, results =
             [0 ; 501 ; 1501; 1501; 501; 0]
@@ -471,10 +487,10 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
                 && between 1 4 <| Array.length wouldBeCancelled @> } // should be = 2, but we'll settle for this weaker assertion
 
     let [<Fact>] ``when active, cooperatively cancels requests exceeding the cutoff duration`` () = async {
-        let pol = Parser.parseUpstreamPolicy log pols map
-        let ap = pol.Find "any"
-        test <@ not ap.PolicyConfig.isolate
-                && Some expectedRules = ap.PolicyConfig.cutoff @>
+        let pol = Parser.parse log defs
+        let ap = pol.Find("default","any")
+        test <@ not ap.Policy.isolate
+                && Some expectedRules = ap.Policy.cutoff @>
         let! time, results =
             [0 ; 501 ; 2501; 2501; 501; 0]
             |> Seq.mapi (fun i duration -> (if i % 2 = 0 then runError else runOk) (ms duration))
