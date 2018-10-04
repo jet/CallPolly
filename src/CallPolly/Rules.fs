@@ -98,8 +98,11 @@ type Governor(log: Serilog.ILogger, serviceName: string, callName : string, poli
             log |> Events.Log.actionIsolated (serviceName, callName, policyName)
             None
         | :? Polly.CircuitBreaker.BrokenCircuitException ->
-            let c = config.breaker.Value
-            let config : Events.BreakerParams = { window = c.window; minThroughput = c.minThroughput; errorRateThreshold = c.errorRateThreshold }
+            let config : Events.BreakerParams =
+                // TODO figure out why/how this can happen
+                match config.breaker with
+                | Some c -> { window = c.window; minThroughput = c.minThroughput; errorRateThreshold = c.errorRateThreshold }
+                | None -> Unchecked.defaultof<_>
             log |> Events.Log.actionBroken (serviceName, callName, policyName) config
             None
         | :? Polly.Timeout.TimeoutRejectedException ->
