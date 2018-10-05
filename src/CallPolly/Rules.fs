@@ -36,8 +36,8 @@ type Governor(log: Serilog.ILogger, serviceName: string, callName : string, poli
     let logQueuing() = log |> Events.Log.queuing (serviceName, callName)
     let logDeferral interval concurrencyLimit = log |> Events.Log.deferral (serviceName, callName, policyName) interval concurrencyLimit
     let logShedding config = log |> Events.Log.shedding (serviceName, callName, policyName) config
-    let logSheddingDryRun () = log |> Events.Log.sheddingDryRun (serviceName, callName, policyName)
-    let logQueuingDryRun () = log |> Events.Log.queuingDryRun (serviceName, callName, policyName)
+    let logSheddingDryRun () = log |> Events.Log.sheddingDryRun (serviceName, callName)
+    let logQueuingDryRun () = log |> Events.Log.queuingDryRun (serviceName, callName)
     let maybeBulkhead : Bulkhead.BulkheadPolicy option =
         match config.limit with
         | None -> None
@@ -148,7 +148,7 @@ type Governor(log: Serilog.ILogger, serviceName: string, callName : string, poli
                 | { limit = Some ({ dryRun = false } as limit) }, _ ->
                     let commenceProcessingTicks = Stopwatch.GetTimestamp()
                     let deferralInterval = Events.StopwatchInterval(startTicks, commenceProcessingTicks)
-                    if deferralInterval.Elapsed.TotalMilliseconds > 1. then
+                    if (let e = deferralInterval.Elapsed in e.TotalMilliseconds) > 1. then
                         logDeferral deferralInterval limit.dop
                 | _ -> ()
 

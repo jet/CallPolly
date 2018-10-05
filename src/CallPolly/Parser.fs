@@ -24,27 +24,32 @@ type LogAmount =
     | Never
     | OnlyWhenDebugEnabled
 
+[<NoComparison>]
 [<RequireQualifiedAccess>]
 type [<Newtonsoft.Json.JsonConverter(typeof<Converters.UnionConverter>, "rule", "Unknown")>] RuleDefinition =
     | Include of policy: string
     | Uri of ``base``: string option * path: string option
     | Sla of slaMs: int * timeoutMs: int
     | Log of req: LogAmount * res: LogAmount
-    | Break of windowS: int * minRequests: int * failPct: float * breakS: float * dryRun: Nullable<bool>
-    | Limit of maxParallel: int * maxQueue: int * dryRun: Nullable<bool>
-    | Cutoff of timeoutMs: int * slaMs: int option * dryRun: Nullable<bool>
+    | Break of windowS: int * minRequests: int * failPct: float * breakS: float * dryRun: bool option
+    | Limit of maxParallel: int * maxQueue: int * dryRun: bool option
+    | Cutoff of timeoutMs: int * slaMs: int option * dryRun: bool option
     | Isolate
     /// Catch-all case when a ruleName is unknown (allows us to add new policies but have existing instances safely ignore it)
     | Unknown
 
 /// Defines a set of base call policies for a system, together with a set of service-specific rules
-type [<JsonObject(ItemRequired = Required.Always)>]
+
+type [<NoComparison; NoEquality>]
+    [<JsonObject(ItemRequired = Required.Always)>]
     CallPolicyDefinition =
     {
         /// Defines Call->Policy->Rule mappings per Service of an application
         services: IDictionary<string,CallPolicyServiceDefinition> }
 
-and [<JsonObject(ItemRequired = Required.Always)>]
+
+and [<NoComparison; NoEquality>]
+    [<JsonObject(ItemRequired = Required.Always)>]
     CallPolicyServiceDefinition =
     {
         /// Map of Call names to Policies to use (may refer to items in `globalPolicies`)
@@ -70,6 +75,7 @@ type LogMode =
     | Never
     | OnlyWhenDebugEnabled
 
+[<NoComparison>]
 [<RequireQualifiedAccess>]
 type ActionRule =
     | BaseUri of Uri: Uri
@@ -91,6 +97,7 @@ let inferPolicy : ActionRule seq -> PolicyConfig =
         | ActionRule.BaseUri _ | ActionRule.RelUri _ | ActionRule.Sla _ | ActionRule.Log _ -> s
     Seq.fold folder { isolate = false; cutoff = None; limit = None; breaker = None }
 
+[<NoComparison>]
 type CallConfiguration =
     {   timeout: TimeSpan option; sla: TimeSpan option
         ``base``: Uri option; rel: Uri option
@@ -158,14 +165,14 @@ let parseInternal defsJson =
                     minThroughput = min
                     errorRateThreshold = failPct/100.
                     retryAfter = TimeSpan.FromSeconds breakS
-                    dryRun = if dryRun.HasValue then dryRun.Value else false }
+                    dryRun = dryRun |> Option.defaultValue false }
             | RuleDefinition.Limit(maxParallel=dop; maxQueue=queue; dryRun=dryRun) ->
                 yield ActionRule.Limit {
                     dop = dop
                     queue = queue
-                    dryRun = if dryRun.HasValue then dryRun.Value else false }
+                    dryRun = dryRun |> Option.defaultValue false }
             | RuleDefinition.Cutoff(timeoutMs=TimeSpanMs timeout; slaMs=slaMs; dryRun=dryRun) ->
-                yield ActionRule.Cutoff { timeout = timeout; sla = slaMs |> Option.map (|TimeSpanMs|); dryRun = if dryRun.HasValue then dryRun.Value else false }
+                yield ActionRule.Cutoff { timeout = timeout; sla = slaMs |> Option.map (|TimeSpanMs|); dryRun = dryRun |> Option.defaultValue false }
             | RuleDefinition.Unknown ->
                 // TODO capture name of unknown rule, log once (NB recomputed every 10s so can't log every time)
                 () // Ignore ruleNames we don't yet support (allows us to define rules only newer instances understand transparently)

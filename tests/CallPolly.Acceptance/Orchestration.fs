@@ -146,7 +146,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let policy = Parser.parse log policy
         let sut = Sut(log, policy)
         let! time, (Status res) = sut.ApiOneSecondSla Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
-        test <@ res = 503 && between 1. 1.2 (time.Elapsed.TotalSeconds) @>
+        test <@ res = 503 && between 1. 1.2 (let t = time.Elapsed in t.TotalSeconds) @>
     }
 
     let [<Fact>] ``Propagation - Upstream timeouts can be mapped to 504s`` () = async {
@@ -227,5 +227,5 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let! time, res = List.init 1000 alternateBetweenTwoUpstreams |> Async.Parallel |> Stopwatch.Time
         let counts = res |> Seq.countBy (function Status s -> s) |> Seq.sortBy fst |> List.ofSeq
         test <@ match counts with [200,successCount; 503,rejectCount] -> successCount < 100 && rejectCount > 800 | x -> failwithf "%A" x @>
-        test <@ between 0.5 2. time.Elapsed.TotalSeconds @>
+        test <@ between 0.5 2. (let t = time.Elapsed in t.TotalSeconds) @>
     }

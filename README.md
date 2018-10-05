@@ -1,6 +1,6 @@
 # CallPolly
 
-:pray: [**`Polly`**](https://github.com/App-vNext/Polly) is a focused library _and a rich set of documentation, samples and discussions_ around various resilience patterns for .NET.
+:raised_hands: [**`Polly`**](https://github.com/App-vNext/Polly) is a focused .NET library _and a rich set of documentation, samples and discussions_ around various system resilience patterns.
 
 Look no further for a mature, well thought out set of abstractions with a responsive community. While we think CallPolly brings a lot of value, there's equally a very good chance your needs can be fulfilled by using [Polly directly via its `PolicyRegistry` mechanism](https://github.com/App-vNext/Polly/wiki/PolicyRegistry).
 

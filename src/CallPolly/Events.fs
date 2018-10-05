@@ -3,7 +3,7 @@
 open System
 
 /// Represents a time measurement of a computation that includes stopwatch tick metadata
-[<NoEquality; NoComparison>]
+[<NoComparison; NoEquality>]
 type StopwatchInterval (startTicks : int64, endTicks : int64) =
     do if startTicks < 0L || startTicks > endTicks then invalidArg "ticks" "tick arguments do not form a valid interval."
     member __.StartTicks = startTicks
@@ -16,8 +16,10 @@ module Constants =
 
 type BreakerParams = { window: TimeSpan; minThroughput: int; errorRateThreshold: float }
 type BulkheadParams = { dop: int; queue: int }
+[<NoComparison; NoEquality>]
 type CutoffParams = { timeout: TimeSpan; sla: Nullable<TimeSpan> }
 
+[<NoComparison; NoEquality>]
 type Event =
     | Isolated of service: string * call: string
     | Broken of service: string * call: string * config: BreakerParams
@@ -70,9 +72,9 @@ module internal Log =
     let shedding (service: string, call:string, policy:string) (config:BulkheadParams) (log : Serilog.ILogger) =
         let lfe = log |> forEvent (Shed (service, call, config))
         lfe.Warning("Bulkhead Shedding for {service:l}-{call:l} based on {policy:l}: {@bulkheadConfig}", service, call, policy, config)
-    let queuingDryRun (service: string, call:string, policy:string) (log : Serilog.ILogger) =
+    let queuingDryRun (service: string, call:string) (log : Serilog.ILogger) =
         log.ForContext("dryRun",true).Information("Bulkhead DRYRUN Queuing for {service:l}-{call:l}", service, call)
-    let sheddingDryRun (service: string, call:string, policy:string) (log : Serilog.ILogger) =
+    let sheddingDryRun (service: string, call:string) (log : Serilog.ILogger) =
         log.ForContext("dryRun",true).Warning("Bulkhead DRYRUN Shedding for {service:l}-{call:l}", service, call)
 
     (* Cutoff violations and abandonments *)
@@ -80,13 +82,13 @@ module internal Log =
     let cutoffSlaBreached (service: string, call:string, policy:string) (sla: TimeSpan) (interval: StopwatchInterval) (log: Serilog.ILogger) =
         let lfe = log |> forEvent (Breached (service, call,sla,interval))
         lfe.Warning("Cutoff {service:l}-{call:l} {durationMs} breached SLA {slaMs} in {policy:l}",
-            service, call, interval.Elapsed.TotalMilliseconds, sla.TotalMilliseconds, policy)
+            service, call, (let t = interval.Elapsed in t.TotalMilliseconds), sla.TotalMilliseconds, policy)
     let cutoffTimeout (service: string, call:string, policy:string) (dryRun, config : CutoffParams) (interval: StopwatchInterval) (log : Serilog.ILogger) =
         if dryRun then
             let lfe = log.ForContext("dryRun",true)
             lfe.Warning("Cutoff DRYRUN {service:l}-{call:l} {durationMs} (cancelation would have been requested on {timeoutMs}) in {policy:l}",
-                service, call, interval.Elapsed.TotalMilliseconds, config.timeout.TotalMilliseconds, policy)
+                service, call, (let t = interval.Elapsed in t.TotalMilliseconds), config.timeout.TotalMilliseconds, policy)
         else
             let lfe = log |> forEvent (Canceled (service, call,config,interval))
             lfe.Warning("Cutoff {service:l}-{call:l} {durationMs} canceled after {timeoutMs} in {policy:l}: {@cutoffConfig}",
-                service, call, interval.Elapsed.TotalMilliseconds, config.timeout.TotalMilliseconds, policy, config)
+                service, call, (let t = interval.Elapsed in t.TotalMilliseconds), config.timeout.TotalMilliseconds, policy, config)

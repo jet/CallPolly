@@ -73,6 +73,7 @@ module SerilogHelpers =
     open Serilog.Events
 
     /// Create a logger, targeting the specified outputs
+    [<NoComparison>]
     type LogOutput = LocalSeq | Sink of Serilog.Core.ILogEventSink
     let createLoggerWithSinks outputs =
         let addSink (logger : Serilog.LoggerConfiguration) = function
