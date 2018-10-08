@@ -86,27 +86,31 @@ module Constants =
 
 [<NoComparison>]
 [<RequireQualifiedAccess>]
-type Parsed =
+type ParsedRule =
     | Policy of Config.Policy.Input.Value
     | Http of Config.Http.Input.Value
     | Unknown of Newtonsoft.Json.Linq.JObject
+[<NoComparison>]
+type ParsedCall = { callName: string; policyName: string; rules: ParsedRule list }
+[<NoComparison>]
+type ParsedService = { serviceName: string; defaultCallName: string option; calls: ParsedCall list }
 
-let parseInternal defsJson =
+let parseInternal defsJson : ParsedService seq =
     let defs: CallPolicyDefinition = try Newtonsoft.Deserialize defsJson with e -> PolicyParseException(defsJson, e) |> raise
     let dumpDefs (serviceDef: CallPolicyServiceDefinition) = sprintf "%A" [ for x in serviceDef.policies -> x.Key, List.ofArray x.Value ]
-    let rec mapService stack (serviceDef : CallPolicyServiceDefinition) polRules : Parsed seq =
-        let rec unroll stack (def : Input) : Parsed seq = seq {
+    let rec mapService stack (serviceDef : CallPolicyServiceDefinition) polRules : ParsedRule seq =
+        let rec unroll stack (def : Input) : ParsedRule seq = seq {
             match def with
-            | Input.Uri x -> yield Parsed.Http (Config.Http.Input.Value.Uri x)
-            | Input.Sla x -> yield Parsed.Http (Config.Http.Input.Value.Sla x)
-            | Input.Log x -> yield Parsed.Http (Config.Http.Input.Value.Log x)
+            | Input.Uri x -> yield ParsedRule.Http (Config.Http.Input.Value.Uri x)
+            | Input.Sla x -> yield ParsedRule.Http (Config.Http.Input.Value.Sla x)
+            | Input.Log x -> yield ParsedRule.Http (Config.Http.Input.Value.Log x)
 
-            | Input.Isolate -> yield Parsed.Policy Config.Policy.Input.Value.Isolate
-            | Input.Break x -> yield Parsed.Policy (Config.Policy.Input.Value.Break x)
-            | Input.Limit x -> yield Parsed.Policy (Config.Policy.Input.Value.Limit x)
-            | Input.Cutoff x -> yield Parsed.Policy (Config.Policy.Input.Value.Cutoff x)
+            | Input.Isolate -> yield ParsedRule.Policy Config.Policy.Input.Value.Isolate
+            | Input.Break x -> yield ParsedRule.Policy (Config.Policy.Input.Value.Break x)
+            | Input.Limit x -> yield ParsedRule.Policy (Config.Policy.Input.Value.Limit x)
+            | Input.Cutoff x -> yield ParsedRule.Policy (Config.Policy.Input.Value.Cutoff x)
 
-            | Input.Unknown x -> yield Parsed.Unknown x
+            | Input.Unknown x -> yield ParsedRule.Unknown x
             | Input.Include includedPolicyName ->
                 match stack |> List.tryFindIndex (fun x -> x=includedPolicyName) with
                 | None -> ()
@@ -120,17 +124,16 @@ let parseInternal defsJson =
                     yield! defs |> Seq.collect (unroll stack') }
         polRules |> Seq.collect (unroll stack)
 
-    seq { for KeyValue (serviceName,serviceDef) in defs.services ->
+    seq {
+        for KeyValue (serviceName,serviceDef) in defs.services ->
             let mapCall callName policyName =
                 match serviceDef.policies.TryGetValue policyName with
                 | false, _ -> raise <| NotFoundCallPolicyReferenceException(serviceName, callName, policyName, dumpDefs serviceDef)
                 | true, rules ->
                     let mapped = mapService [policyName; callName; serviceName] serviceDef rules |> List.ofSeq
-                    callName,
-                    {   policyName = policyName
-                        policyConfig = mapped |> Seq.choose (function Parsed.Policy x -> Some x | _ -> None) |> Config.Policy.ofInputs
-                        callConfig = mapped |> Seq.choose (function Parsed.Http x -> Some x | _ -> None) |> Config.Http.ofInputs
-                        raw = mapped }
+                    {   callName = callName
+                        policyName = policyName
+                        rules = mapped }
             let defaultCallName, callsMap =
                 let explicitCalls = [ for KeyValue (callName,policyName) in serviceDef.calls -> mapCall callName policyName]
                 match Option.ofObj serviceDef.defaultPolicy with
@@ -142,12 +145,49 @@ let parseInternal defsJson =
                     Some Constants.defaultCallName, mapCall Constants.defaultCallName defPolName :: explicitCalls
                 | _ ->
                     None, explicitCalls
-            serviceName, { serviceName = serviceName; defaultPolicyName = defaultCallName; callsMap = callsMap } }
+            { serviceName = serviceName; defaultCallName = defaultCallName; calls = callsMap } }
 
-let parse log defs : Policy<_,_> =
-    let rulesMap = parseInternal defs
-    Policy.Create(log, rulesMap)
+[<NoComparison>]
+type Warning = { serviceName: string; callName: string; unknownRule: Newtonsoft.Json.Linq.JObject }
 
-let updateFrom defs (x : Policy<_,_>) : (string * (string * ChangeLevel) list) list =
-    let rulesMap = parseInternal defs
-    x.UpdateFrom rulesMap
+type ParseResult(services: ParsedService[]) =
+    let mapService (x : ParsedService) : (*serviceName:*) string * ServiceConfig<_> =
+        x.serviceName,
+        {   serviceName = x.serviceName
+            defaultCallName = x.defaultCallName
+            callsMap =
+              [ for call in x.calls ->
+                    let callConfig =
+                        {   policyName = call.policyName
+                            policyConfig = call.rules |> Seq.choose (function ParsedRule.Policy x -> Some x | _ -> None) |> Config.Policy.ofInputs
+                            callConfig = call.rules |> Seq.choose (function ParsedRule.Http x -> Some x | _ -> None) |> Config.Http.ofInputs
+                        }
+                    call.callName, callConfig ] }
+    let mapped = services |> Seq.map mapService
+
+    member __.Warnings =
+        [ for service in services do
+            for call in service.calls do
+                for rule in call.rules do
+                    match rule with
+                    | ParsedRule.Unknown jo ->
+                        yield
+                            {   serviceName = service.serviceName
+                                callName = call.callName
+                                unknownRule = jo }
+                    | _ -> () ]
+    member __.Raw : Map<string,Map<string,ParsedRule list>> = Map.ofSeq <| seq {
+        for service in services ->
+            service.serviceName,
+            Map.ofSeq <| seq {
+                for call in service.calls ->
+                    call.callName, call.rules } }
+
+    member __.CreatePolicy log : Policy<_> =
+        Policy.Create(log, mapped)
+    member __.UpdatePolicy( x : Policy<_>) : (string * (string * ChangeLevel) list) list =
+        x.UpdateFrom mapped
+
+let parse defs : ParseResult =
+    let services = parseInternal defs
+    ParseResult(Array.ofSeq services)

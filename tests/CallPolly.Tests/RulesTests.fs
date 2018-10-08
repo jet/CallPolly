@@ -62,7 +62,7 @@ module Core =
         }
 }}}"""
 
-    let mkPolicy value = Parser.Parsed.Policy value
+    let mkPolicy value = Parser.ParsedRule.Policy value
 
     let limitParsed = mkPolicy <| Config.Policy.Input.Value.Limit { maxParallel=2; maxQueue=3; dryRun=Some true }
     let limitConfig : Rules.BulkheadConfig = { dop=2; queue=3; dryRun=true }
@@ -78,7 +78,7 @@ module Core =
 
     let isolateParsed = mkPolicy <| Config.Policy.Input.Value.Isolate
 
-    let mkHttp value = Parser.Parsed.Http value
+    let mkHttp value = Parser.ParsedRule.Http value
     let baseUri = Uri "http://base"
     let baseParsed = mkHttp <| Config.Http.Input.Value.Uri { ``base``=Some (string baseUri); path=None }
     let logParsed = mkHttp <| Config.Http.Input.Value.Log { req=Config.Http.Input.LogLevel.OnlyWhenDebugEnabled; res=Config.Http.Input.LogLevel.OnlyWhenDebugEnabled }
@@ -88,60 +88,62 @@ module Core =
             ``base`` = Some baseUri; rel = None
             reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled },
         Some baseUri
-    let noRules = { isolate = false; cutoff = None; limit = None; breaker = None; }
+    let noPolicy = { isolate = false; cutoff = None; limit = None; breaker = None; }
     let heavyConfig : Config.Http.Configuration * Uri option =
         {   timeout = Some (s 10); sla = Some (s 5)
             ``base`` = None; rel = None
             reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled },
         None
     let heavyRules = { isolate = true; cutoff = Some cutoffConfig; limit = Some limitConfig; breaker = Some breakConfig }
-    let mkParsedSla sla timeout = Parser.Parsed.Http (Config.Http.Input.Value.Sla {slaMs = sla; timeoutMs = timeout })
+    let mkParsedSla sla timeout = Parser.ParsedRule.Http (Config.Http.Input.Value.Sla {slaMs = sla; timeoutMs = timeout })
 
     /// Base tests exercising core functionality
     type Core(output : Xunit.Abstractions.ITestOutputHelper) =
         let log = LogHooks.createLogger output
 
         let [<Fact>] ``Policy TryFind happy path`` () =
-            let pol = Parser.parse log defs
-            let tryFindActionRules call =
-                pol.TryFind("default",call)
-                |> Option.map (fun x -> x.Raw, x.Config, x.Policy)
-            let eddRaw, eddCfg, eddRules = trap <@ tryFindActionRules "EstimatedDeliveryDates" |> Option.get @>
+            let res = Parser.parse(defs)
+            let pol = res.CreatePolicy(log)
+            let tryFindActionRules call = pol.TryFind("default",call)
+            let edd = trap <@ tryFindActionRules "EstimatedDeliveryDates" |> Option.get @>
+            let findRaw call = res.Raw.TryFind("default").Value.TryFind(call).Value
+            let eddRaw = findRaw "EstimatedDeliveryDates"
             test <@ [baseParsed; logParsed; mkParsedSla 1000 5000] = eddRaw
-                    && defConfig = eddCfg
-                    && noRules = eddRules @>
-            let poRaw, poCfg, poRules = trap <@ tryFindActionRules "placeOrder" |> Option.get @>
+                    && defConfig = edd.Config
+                    && noPolicy = edd.Policy @>
+            let poRaw = findRaw "placeOrder"
+            let po = trap <@ tryFindActionRules "placeOrder" |> Option.get @>
             test <@ [logParsed; limitParsed; breakParsed; cutoffParsed; mkParsedSla 5000 10000; isolateParsed] = poRaw
-                    && heavyConfig = poCfg
-                    && heavyRules = poRules @>
+                    && heavyConfig = po.Config
+                    && heavyRules = po.Policy @>
             test <@ None = tryFindActionRules "missing" @>
 
         let [<Fact>] ``Policy Find Happy path`` () =
-            let pol = Parser.parse log defs
-            let defaultLog = pol.Find("default","(defaultLog)").Raw
-            let default_ = pol.Find("default","shouldDefault").Raw
-            let findActionRules call = pol.Find("default",call).Raw
-            test <@ baseParsed :: default_ = findActionRules "EstimatedDeliveryDates" @>
-            test <@ [isolateParsed] = findActionRules "EstimatedDeliveryDate" @>
-            test <@ defaultLog @ [limitParsed; breakParsed; cutoffParsed; mkParsedSla 5000 10000; isolateParsed] = findActionRules "placeOrder" @>
-            test <@ default_ = findActionRules "unknown" @>
+            let res = Parser.parse(defs)
+            let pol = res.CreatePolicy(log)
+            let findRaw call = res.Raw.TryFind("default").Value.TryFind(call).Value
+            let defaultLog = findRaw "(defaultLog)"
+            let default_ = findRaw "(default)"
+            test <@ baseParsed :: default_ = findRaw "EstimatedDeliveryDates" @>
+            test <@ [isolateParsed] = findRaw "EstimatedDeliveryDate" @>
+            test <@ defaultLog @ [limitParsed; breakParsed; cutoffParsed; mkParsedSla 5000 10000; isolateParsed] = findRaw "placeOrder" @>
             let heavyPolicy = pol.Find("default","placeOrder")
             test <@ heavyPolicy.Policy.isolate
                     && Some breakConfig = heavyPolicy.Policy.breaker @>
 
         let [<Fact>] ``UpstreamPolicy Update management`` () =
-            let pol = Parser.parse log defs
+            let pol = Parser.parse(defs).CreatePolicy log
             let heavyPolicy = pol.Find("default","placeOrder")
             test <@ heavyPolicy.Policy.isolate
                     && Some breakConfig = heavyPolicy.Policy.breaker @>
             let updated =
                 let polsWithDifferentAdddress = defs.Replace("http://base","http://base2")
-                pol |> Parser.updateFrom polsWithDifferentAdddress |> List.ofSeq
+                Parser.parse(polsWithDifferentAdddress).UpdatePolicy(pol) |> List.ofSeq
             test <@ updated |> hasChanged "default" "EstimatedDeliveryDates" Rules.ChangeLevel.Configuration
                     && heavyPolicy.Policy.isolate @>
             let updated =
                 let polsWithIsolateMangledAndBackToOriginalBaseAddress = defs.Replace("Isolate","isolate")
-                pol |> Parser.updateFrom polsWithIsolateMangledAndBackToOriginalBaseAddress |> List.ofSeq
+                Parser.parse(polsWithIsolateMangledAndBackToOriginalBaseAddress).UpdatePolicy pol |> List.ofSeq
             test <@ updated |> hasChanged "default" "EstimatedDeliveryDates" Rules.ChangeLevel.Configuration
                     && updated |> hasChanged "default" "placeOrder" Rules.ChangeLevel.Policy
                     && not heavyPolicy.Policy.isolate @>
@@ -228,7 +230,8 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
     let expectedLimitRules : Rules.BulkheadConfig = { dop = 2; queue = 3; dryRun = true }
 
     let [<Fact>] ``takes precedence over, but does not conceal Break, Limit or Timeout; logging only reflects Isolate rule`` () = async {
-        let pol = Parser.parse log Core.defs
+        let res = Parser.parse Core.defs
+        let pol = res.CreatePolicy log
         let ap = pol.Find("default","placeOrder")
         test <@ ap.Policy.isolate
                 && Some Core.breakConfig = ap.Policy.breaker
@@ -240,7 +243,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
         [Isolated ("default","placeOrder","heavy")] =! buffer.Take()
         let updated =
             let polsWithIsolateMangled = Core.defs.Replace("Isolate","isolate")
-            pol |> Parser.updateFrom polsWithIsolateMangled |> List.ofSeq
+            Parser.parse(polsWithIsolateMangled).UpdatePolicy pol |> List.ofSeq
         test <@ updated |> hasChanged "default" "placeOrder" Rules.ChangeLevel.Policy
                 && not ap.Policy.isolate @>
         let! result = ap.Execute(call) |> Async.Catch
@@ -260,7 +263,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
 }}}"""
 
     let [<Fact>] ``When on, throws and logs information`` () = async {
-        let pol = Parser.parse log isolateDefs
+        let pol = Parser.parse(isolateDefs).CreatePolicy log
         let ap = pol.Find("default","notFound")
         test <@ ap.Policy.isolate && None = ap.Policy.breaker @>
         let call = async { return 42 }
@@ -269,7 +272,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
         [Isolated ("default","(default)","def")] =! buffer.Take() }
 
     let [<Fact>] ``when removed, stops intercepting processing, does not log`` () = async {
-        let pol = Parser.parse log isolateDefs
+        let pol = Parser.parse(isolateDefs).CreatePolicy log
         let ap = pol.Find("default","nonDefault")
         test <@ ap.Policy.isolate && None = ap.Policy.breaker @>
         let call = async { return 42 }
@@ -278,7 +281,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
         [Isolated ("default","nonDefault","def")] =! buffer.Take()
         let updated =
             let polsWithIsolateMangled = isolateDefs.Replace("Isolate","isolate")
-            pol |> Parser.updateFrom polsWithIsolateMangled |> List.ofSeq
+            Parser.parse(polsWithIsolateMangled).UpdatePolicy pol |> List.ofSeq
         test <@ updated |> hasChanged "default" "nonDefault" Rules.ChangeLevel.Policy
                 && not ap.Policy.isolate @>
         let! result = ap.Execute(call) |> Async.Catch
@@ -302,7 +305,7 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
     let expectedRules : Rules.BreakerConfig = { window = s 5; minThroughput = 2; errorRateThreshold = 0.5; retryAfter = TimeSpan.FromSeconds 0.5; dryRun = false }
 
     let [<Fact>] ``applies break constraints, logging each application and status changes appropriately`` () = async {
-        let pol = Parser.parse log defs
+        let pol = Parser.parse(defs).CreatePolicy log
         let ap = pol.Find("default","notFound")
         test <@ not ap.Policy.isolate
                 && Some expectedRules = ap.Policy.breaker @>
@@ -332,11 +335,11 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
         do! shouldBeOpen
         // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
         let changedRules = defs.Replace(".5","5")
-        pol |> Parser.updateFrom changedRules |> ignore
+        Parser.parse(changedRules).UpdatePolicy pol |> ignore
         do! runSuccess }
 
     let [<Fact>] ``dryRun mode prevents breaking, logs status changes appropriately`` () = async {
-        let pol = Parser.parse log dryRunDefs
+        let pol = Parser.parse(dryRunDefs).CreatePolicy(log)
         let ap = pol.Find("default","notFound")
         test <@ not ap.Policy.isolate
                 && Some { expectedRules with dryRun = true } = ap.Policy.breaker @>
@@ -361,7 +364,7 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
         [Call ("(default)",BreakingDryRun)] =! buffer.Take()
         // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
         let changedRules = defs.Replace(".5","5")
-        pol |> Parser.updateFrom changedRules |> ignore
+        Parser.parse(changedRules).UpdatePolicy pol |> ignore
         do! runSuccess
         do! runSuccess
         // 1/2 failed (if the timeout happened in between the two successes, it would fail)
@@ -391,7 +394,7 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
         return 42 }
 
     let [<Fact>] ``dryRun mode does not inhibit processing`` () = async {
-        let pol = Parser.parse log dryRunDefs
+        let pol = Parser.parse(dryRunDefs).CreatePolicy(log)
         let ap = pol.Find("default","any")
         test <@ not ap.Policy.isolate
                 && Some { expectedRules with dryRun = true } = ap.Policy.limit @>
@@ -420,7 +423,7 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
                 && 1 = Array.length shed @> }
 
     let [<Fact>] ``when active, sheds load above limit`` () = async {
-        let pol = Parser.parse log defs
+        let pol = Parser.parse(defs).CreatePolicy log
         let ap = pol.Find("default","any")
         test <@ not ap.Policy.isolate && Some expectedRules = ap.Policy.limit @>
         let! time, results =
@@ -478,7 +481,7 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
         return 42 }
 
     let [<Fact>] ``dryRun mode does not inhibit processing`` () = async {
-        let pol = Parser.parse log dryRunDefs
+        let pol = Parser.parse(dryRunDefs).CreatePolicy(log)
         let ap = pol.Find("default","any")
         test <@ not ap.Policy.isolate
                 && Some { expectedRules with dryRun = true } = ap.Policy.cutoff @>
@@ -505,7 +508,7 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
                 && between 1 4 <| Array.length wouldBeCancelled @> } // should be = 2, but we'll settle for this weaker assertion
 
     let [<Fact>] ``when active, cooperatively cancels requests exceeding the cutoff duration`` () = async {
-        let pol = Parser.parse log defs
+        let pol = Parser.parse(defs).CreatePolicy log
         let ap = pol.Find("default","any")
         test <@ not ap.Policy.isolate
                 && Some expectedRules = ap.Policy.cutoff @>
