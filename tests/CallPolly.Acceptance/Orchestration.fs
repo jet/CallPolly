@@ -87,7 +87,7 @@ type Act =
                                 do! x.Execute() |> Async.Ignore
                             return 43}
 
-type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_,_>) =
+type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
 
     let run serviceName callName f = policy.Find(serviceName, callName).Execute(f)
 
@@ -143,28 +143,28 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output
 
     let [<Fact>] ``Cutoff - can be used to cap call time when upstreams misbehave`` () = async {
-        let policy = Parser.parse log policy
+        let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
         let! time, (Status res) = sut.ApiOneSecondSla Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
         test <@ res = 503 && between 1. 1.2 (let t = time.Elapsed in t.TotalSeconds) @>
     }
 
     let [<Fact>] ``Propagation - Upstream timeouts can be mapped to 504s`` () = async {
-        let policy = Parser.parse log policy
+        let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
         let! Status res = sut.ApiTenSecondSla ThrowTimeout |> Async.Catch
         test <@ res = 504 @>
     }
 
     let [<Fact>] ``Isolate - Manual circuit-breaking`` () = async {
-        let policy = Parser.parse log policy
+        let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
         let! Status res = sut.ApiManualBroken |> Async.Catch
         test <@ res = 503 @>
     }
 
     let [<Fact>] ``Break - Circuit breaking base functionality`` () = async {
-        let policy = Parser.parse log policy
+        let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
         // 10 fails put it into circuit breaking mode - let's do 9 and the step carefully
         let! res = List.replicate 9 (sut.ApiTenSecondSla ThrowTimeout |> Async.Catch) |> Async.Parallel
@@ -190,7 +190,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
     }
 
     let [<Fact>] ``Break - Broken circuits can recover and be retriggered`` () = async {
-        let policy = Parser.parse log policy
+        let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
         // 10 fails put it into circuit breaking mode
         let! res = List.replicate 10 (sut.ApiTenSecondSla ThrowTimeout |> Async.Catch) |> Async.Parallel
@@ -217,7 +217,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
     }
 
     let [<Fact>] ``Limit - Bulkhead functionality`` () = async {
-        let policy = Parser.parse log policy
+        let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
         // 10 fails put it into circuit breaking mode - let's do 9 and the step carefully
         let alternateBetweenTwoUpstreams i =

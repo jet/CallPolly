@@ -181,19 +181,18 @@ type Governor(log: Serilog.ILogger, serviceName: string, callName : string, poli
 
 type [<RequireQualifiedAccess>] ChangeLevel = Added | ConfigurationAndPolicy | Configuration | Policy
 
-type CallConfig<'TCallConfig, 'Raw> =
+type CallConfig<'TCallConfig> =
     {   policyName: string
         policyConfig: PolicyConfig
-        callConfig: 'TCallConfig
-        raw: 'Raw list }
+        callConfig: 'TCallConfig }
 
 /// Holds a policy and configuration for a Service Call, together with the state required to govern the incoming calls
-type CallPolicy<'TConfig,'Raw when 'TConfig: equality>(log, serviceName, callName, cfg : CallConfig<'TConfig,'Raw>) =
+type CallPolicy<'TConfig when 'TConfig: equality>(log, serviceName, callName, cfg : CallConfig<'TConfig>) =
     let makeGoverner cfg = Governor(log, serviceName, callName, cfg.policyName, cfg.policyConfig)
     let mutable cfg, governor = cfg, makeGoverner cfg
 
     /// Ingest an updated set of config values, reporting diffs, if any
-    member __.TryUpdate(updated : CallConfig<_,_>) =
+    member __.TryUpdate(updated : CallConfig<_>) =
         let changes =
             match updated.policyConfig = cfg.policyConfig, updated.callConfig = cfg.callConfig with
             | true, true -> Some ChangeLevel.ConfigurationAndPolicy
@@ -213,7 +212,6 @@ type CallPolicy<'TConfig,'Raw when 'TConfig: equality>(log, serviceName, callNam
 
     member __.Policy = cfg.policyConfig
     member __.Config = cfg.callConfig
-    member __.Raw = cfg.raw
 
     /// Execute the call, apply the policy rules
     member __.Execute(inner : Async<'t>) =
@@ -223,18 +221,18 @@ type CallPolicy<'TConfig,'Raw when 'TConfig: equality>(log, serviceName, callNam
     member __.InternalState =
         cfg, governor.InternalState
 
-type ServiceConfig<'TConfig,'Raw> =
-    {   defaultPolicyName: string option
+type ServiceConfig<'TConfig> =
+    {   defaultCallName: string option
         serviceName: string
-        callsMap: (string*CallConfig<'TConfig,'Raw>) list }
+        callsMap: (string*CallConfig<'TConfig>) list }
 
 /// Maintains a set of call policies for a service
-type ServicePolicy<'TConfig,'Raw when 'TConfig: equality> private
+type ServicePolicy<'TConfig when 'TConfig: equality> private
     (   log : Serilog.ILogger,
         serviceName: string,
-        defaultPolicyName : string option,
-        calls: ConcurrentDictionary<string,CallPolicy<'TConfig,'Raw>>) =
-    let mutable defaultPolicyName = defaultPolicyName
+        defaultCallName : string option,
+        calls: ConcurrentDictionary<string,CallPolicy<'TConfig>>) =
+    let mutable defaultCallName = defaultCallName
 
     /// Searches for the CallPolicy associated with `call`
     member __.TryFind(callName : string) =
@@ -243,8 +241,8 @@ type ServicePolicy<'TConfig,'Raw when 'TConfig: equality> private
         | false, _ -> None
 
     /// Searches for the default CallPolicy defined for this service (if any)
-    member __.TryDefaultPolicy() : CallPolicy<'TConfig,'Raw> option =
-        match defaultPolicyName with
+    member __.TryDefaultPolicy() : CallPolicy<'TConfig> option =
+        match defaultCallName with
         | None -> None
         | Some def ->
             match calls.TryGetValue def with
@@ -255,14 +253,14 @@ type ServicePolicy<'TConfig,'Raw when 'TConfig: equality> private
     /// - Policies: mapping of policy name to arrays of Rules, defined by the json in `policiesJson`
     /// - Map: the mappings of Action names to items in the Policies, defined by the json in `mapJson`
     /// Throws if policiesJson or mapJson fail to adhere to correct Json structure
-    static member Create(log, cfg: ServiceConfig<'TConfig,'Raw>) =
+    static member Create(log, cfg: ServiceConfig<'TConfig>) =
         let inputs = seq {
             for callName,callCfg in cfg.callsMap ->
-                KeyValuePair(callName, CallPolicy<_,_>(log, cfg.serviceName, callName, callCfg)) }
-        ServicePolicy<_,_>(log, cfg.serviceName, cfg.defaultPolicyName, ConcurrentDictionary inputs)
+                KeyValuePair(callName, CallPolicy<_>(log, cfg.serviceName, callName, callCfg)) }
+        ServicePolicy<_>(log, cfg.serviceName, cfg.defaultCallName, ConcurrentDictionary inputs)
 
     /// Processes as per Parse, but updates an existing ruleset, annotating any detected changes
-    member __.UpdateFrom(cfg: ServiceConfig<'TConfig,'Raw>) =
+    member __.UpdateFrom(cfg: ServiceConfig<'TConfig>) =
         let updates = [
             for callName,cfg in cfg.callsMap do
                 let mutable changeLevel = None
@@ -273,7 +271,7 @@ type ServicePolicy<'TConfig,'Raw when 'TConfig: equality> private
                 match changeLevel with
                 | None -> ()
                 | Some changeLevel -> yield callName, changeLevel ]
-        defaultPolicyName <- cfg.defaultPolicyName
+        defaultCallName <- cfg.defaultCallName
         updates
 
     /// Facilitates dumping for diagnostics
@@ -283,29 +281,29 @@ type ServicePolicy<'TConfig,'Raw when 'TConfig: equality> private
     }
 
 /// Maintains an application-wide set of service policies, together with their policies, configuration and policy-state
-type Policy<'TConfig,'Raw when 'TConfig : equality> private(log, services: ConcurrentDictionary<string,ServicePolicy<'TConfig,'Raw>>) =
+type Policy<'TConfig when 'TConfig : equality> private(log, services: ConcurrentDictionary<string,ServicePolicy<'TConfig>>) =
 
     /// Initialize the policy from an initial set of configs
-    static member Create(log, cfgs: (string * ServiceConfig<'TConfig,'Raw>) seq) =
+    static member Create(log, cfgs: ((*service:*)string * ServiceConfig<'TConfig>) seq) =
         let inputs = seq {
             for service, cfg in cfgs ->
-                KeyValuePair(service, ServicePolicy<_,_>.Create(log, cfg)) }
-        Policy<'TConfig,'Raw>(log, ConcurrentDictionary<_,_> inputs)
+                KeyValuePair(service, ServicePolicy<_>.Create(log, cfg)) }
+        Policy<'TConfig>(log, ConcurrentDictionary<_,_> inputs)
 
     /// Processes as per Parse, but updates an existing ruleset, annotating any detected changes
-    member __.UpdateFrom(cfgs: (string * ServiceConfig<_,_>) seq) =
+    member __.UpdateFrom(cfgs: (string * ServiceConfig<_>) seq) =
         let updates = ResizeArray()
         for name, cfg in cfgs do
             let create () =
-                ServicePolicy<_,_>.Create(log, cfg)
-            let tryUpdate (current : ServicePolicy<_,_>) =
+                ServicePolicy<_>.Create(log, cfg)
+            let tryUpdate (current : ServicePolicy<_>) =
                 updates.Add(name, current.UpdateFrom cfg)
                 current
             services.AddOrUpdate(name, (fun _callName -> create ()), fun _ current -> tryUpdate current) |> ignore
         updates.ToArray() |> List.ofArray
 
     /// Attempts to find the policy for the specified `call` in the specified `service`
-    member __.TryFind(service, call) : CallPolicy<_,_> Option =
+    member __.TryFind(service, call) : CallPolicy<_> Option =
         match services.TryGetValue service with
         | false, _ -> None
         | true, sp ->
@@ -316,7 +314,7 @@ type Policy<'TConfig,'Raw when 'TConfig : equality> private(log, services: Concu
     /// Finds the policy for the specified `call` in the specified `service`
     /// Throws InvalidOperationException if `service` not found
     /// Throws InvalidOperationException if `call` not defined in ServicePolicy and no default CallPolicy nominated
-    member __.Find(service, call) : CallPolicy<_,_> =
+    member __.Find(service, call) : CallPolicy<_> =
         match services.TryGetValue service with
         | false, _ -> invalidOp <| sprintf "Undefined service '%s'" service
         | true, sp ->
