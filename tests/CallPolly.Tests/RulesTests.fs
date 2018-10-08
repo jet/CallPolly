@@ -33,7 +33,7 @@ module Core =
                 { "rule": "Sla",        "slaMs": 1000, "timeoutMs": 5000 }
             ],
             "edd": [
-                { "rule": "Uri",        "base": "http://base" },
+                { "rule": "Uri",        "base": "http://base/" },
                 { "rule": "Include",    "policy": "default" }
                 ],
             "limit": [
@@ -62,28 +62,40 @@ module Core =
         }
 }}}"""
 
-    let baseUri = Uri "http://base"
-    let baseRule = Parser.ActionRule.BaseUri baseUri
+    let mkPolicy value = Parser.Parsed.Policy value
 
-    let logRule = Parser.ActionRule.Log (Parser.LogMode.OnlyWhenDebugEnabled, Parser.LogMode.OnlyWhenDebugEnabled)
+    let limitParsed = mkPolicy <| Config.Policy.Input.Value.Limit { maxParallel=2; maxQueue=3; dryRun=Some true }
     let limitConfig : Rules.BulkheadConfig = { dop=2; queue=3; dryRun=true }
-    let limitRule = Parser.ActionRule.Limit limitConfig
+    let limitPolicy = Config.Policy.Rule.Limit limitConfig
+
+    let breakParsed = mkPolicy <| Config.Policy.Input.Value.Break { windowS = 5; minRequests = 100; failPct=20.; breakS = 1.; dryRun = None }
     let breakConfig : Rules.BreakerConfig = { window = s 5; minThroughput = 100; errorRateThreshold = 0.2; retryAfter = s 1; dryRun = false }
-    let breakRule = Parser.ActionRule.Break breakConfig
+    let breakPolicy = Config.Policy.Rule.Break breakConfig
+
+    let cutoffParsed = mkPolicy <| Config.Policy.Input.Value.Cutoff { timeoutMs = 500; slaMs = None; dryRun = Some true }
     let cutoffConfig : Rules.CutoffConfig = { timeout = ms 500; sla = None; dryRun = true }
-    let cutoffRule = Parser.ActionRule.Cutoff cutoffConfig
-    let defConfig : Parser.CallConfiguration * Uri option =
+    let cutoffPolicy = Config.Policy.Rule.Cutoff cutoffConfig
+
+    let isolateParsed = mkPolicy <| Config.Policy.Input.Value.Isolate
+
+    let mkHttp value = Parser.Parsed.Http value
+    let baseUri = Uri "http://base"
+    let baseParsed = mkHttp <| Config.Http.Input.Value.Uri { ``base``=Some (string baseUri); path=None }
+    let logParsed = mkHttp <| Config.Http.Input.Value.Log { req=Config.Http.Input.LogLevel.OnlyWhenDebugEnabled; res=Config.Http.Input.LogLevel.OnlyWhenDebugEnabled }
+
+    let defConfig : Config.Http.Configuration * Uri option =
         {   timeout = Some (s 5); sla = Some (s 1)
             ``base`` = Some baseUri; rel = None
-            reqLog = Parser.LogMode.OnlyWhenDebugEnabled; resLog = Parser.LogMode.OnlyWhenDebugEnabled },
+            reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled },
         Some baseUri
     let noRules = { isolate = false; cutoff = None; limit = None; breaker = None; }
-    let heavyConfig : Parser.CallConfiguration * Uri option =
+    let heavyConfig : Config.Http.Configuration * Uri option =
         {   timeout = Some (s 10); sla = Some (s 5)
             ``base`` = None; rel = None
-            reqLog = Parser.LogMode.OnlyWhenDebugEnabled; resLog = Parser.LogMode.OnlyWhenDebugEnabled },
+            reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled },
         None
     let heavyRules = { isolate = true; cutoff = Some cutoffConfig; limit = Some limitConfig; breaker = Some breakConfig }
+    let mkParsedSla sla timeout = Parser.Parsed.Http (Config.Http.Input.Value.Sla {slaMs = sla; timeoutMs = timeout })
 
     /// Base tests exercising core functionality
     type Core(output : Xunit.Abstractions.ITestOutputHelper) =
@@ -95,11 +107,11 @@ module Core =
                 pol.TryFind("default",call)
                 |> Option.map (fun x -> x.Raw, x.Config, x.Policy)
             let eddRaw, eddCfg, eddRules = trap <@ tryFindActionRules "EstimatedDeliveryDates" |> Option.get @>
-            test <@ [baseRule; logRule; Parser.ActionRule.Sla (ms 1000, ms 5000)] = eddRaw
+            test <@ [baseParsed; logParsed; mkParsedSla 1000 5000] = eddRaw
                     && defConfig = eddCfg
                     && noRules = eddRules @>
             let poRaw, poCfg, poRules = trap <@ tryFindActionRules "placeOrder" |> Option.get @>
-            test <@ [logRule; limitRule; breakRule; cutoffRule; Parser.ActionRule.Sla (ms 5000, ms 10000); Parser.ActionRule.Isolate] = poRaw
+            test <@ [logParsed; limitParsed; breakParsed; cutoffParsed; mkParsedSla 5000 10000; isolateParsed] = poRaw
                     && heavyConfig = poCfg
                     && heavyRules = poRules @>
             test <@ None = tryFindActionRules "missing" @>
@@ -109,9 +121,9 @@ module Core =
             let defaultLog = pol.Find("default","(defaultLog)").Raw
             let default_ = pol.Find("default","shouldDefault").Raw
             let findActionRules call = pol.Find("default",call).Raw
-            test <@ baseRule :: default_ = findActionRules "EstimatedDeliveryDates" @>
-            test <@ [Parser.ActionRule.Isolate] = findActionRules "EstimatedDeliveryDate" @>
-            test <@ defaultLog @ [limitRule; breakRule; cutoffRule; Parser.ActionRule.Sla (ms 5000, ms 10000); Parser.ActionRule.Isolate] = findActionRules "placeOrder" @>
+            test <@ baseParsed :: default_ = findActionRules "EstimatedDeliveryDates" @>
+            test <@ [isolateParsed] = findActionRules "EstimatedDeliveryDate" @>
+            test <@ defaultLog @ [limitParsed; breakParsed; cutoffParsed; mkParsedSla 5000 10000; isolateParsed] = findActionRules "placeOrder" @>
             test <@ default_ = findActionRules "unknown" @>
             let heavyPolicy = pol.Find("default","placeOrder")
             test <@ heavyPolicy.Policy.isolate
