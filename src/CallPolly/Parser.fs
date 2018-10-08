@@ -2,7 +2,7 @@
 
 open CallPolly.Rules
 open Newtonsoft.Json
-open System
+open Newtonsoft.Json.Converters
 open System.Collections.Generic
 
 /// Wrappers for Newtonsoft.Json
@@ -17,36 +17,13 @@ type Newtonsoft() =
     static member Deserialize<'T> (json : string) : 'T =
         JsonConvert.DeserializeObject<'T>(json, settings)
 
-[<RequireQualifiedAccess>]
-[<Newtonsoft.Json.JsonConverter(typeof<Converters.TypeSafeEnumConverter>)>]
-type LogAmount =
-    | Always
-    | Never
-    | OnlyWhenDebugEnabled
-
-[<NoComparison>]
-[<RequireQualifiedAccess>]
-type [<Newtonsoft.Json.JsonConverter(typeof<Converters.UnionConverter>, "rule", "Unknown")>] RuleDefinition =
-    | Include of policy: string
-    | Uri of ``base``: string option * path: string option
-    | Sla of slaMs: int * timeoutMs: int
-    | Log of req: LogAmount * res: LogAmount
-    | Break of windowS: int * minRequests: int * failPct: float * breakS: float * dryRun: bool option
-    | Limit of maxParallel: int * maxQueue: int * dryRun: bool option
-    | Cutoff of timeoutMs: int * slaMs: int option * dryRun: bool option
-    | Isolate
-    /// Catch-all case when a ruleName is unknown (allows us to add new policies but have existing instances safely ignore it)
-    | Unknown
-
 /// Defines a set of base call policies for a system, together with a set of service-specific rules
-
 type [<NoComparison; NoEquality>]
     [<JsonObject(ItemRequired = Required.Always)>]
     CallPolicyDefinition =
     {
         /// Defines Call->Policy->Rule mappings per Service of an application
         services: IDictionary<string,CallPolicyServiceDefinition> }
-
 
 and [<NoComparison; NoEquality>]
     [<JsonObject(ItemRequired = Required.Always)>]
@@ -62,65 +39,31 @@ and [<NoComparison; NoEquality>]
         defaultPolicy: string
 
         // Map of Policy names to Rule lists specific to this Service
-        policies: IDictionary<string,RuleDefinition[]> }
+        policies: IDictionary<string,Input[]> }
 
         // TOCONSIDER it is proposed that any fallback mechanism would be modelled like this
         // /// Reference to name of another ServicePolicy whose policies are to be included in this `policies` map
         // [<JsonProperty(Required=Required.DisallowNull)>] // exception: `null` is allowed here
         // includePoliciesFrom: string
+and [<NoComparison>]
+    [<RequireQualifiedAccess>]
+    [<Newtonsoft.Json.JsonConverter(typeof<UnionConverter>, "rule", "Unknown")>] Input =
+    | Include of policy: string
+    /// Catch-all case when a ruleName is unknown (allows us to add new policies but have existing instances safely ignore it)
+    | Unknown of Newtonsoft.Json.Linq.JObject
 
-[<RequireQualifiedAccess>]
-type LogMode =
-    | Always
-    | Never
-    | OnlyWhenDebugEnabled
+    (* Config.Policy.Input.Value *)
 
-[<NoComparison>]
-[<RequireQualifiedAccess>]
-type ActionRule =
-    | BaseUri of Uri: Uri
-    | RelUri of Uri: Uri
-    | Sla of sla: TimeSpan * timeout: TimeSpan
-    | Log of req: LogMode * res: LogMode
-    | Break of BreakerConfig
-    | Limit of BulkheadConfig
-    | Cutoff of CutoffConfig
     | Isolate
+    | Break of Config.Policy.Input.BreakInput
+    | Limit of Config.Policy.Input.LimitInput
+    | Cutoff of Config.Policy.Input.CutoffInput
 
-let inferPolicy : ActionRule seq -> PolicyConfig =
-    let folder s = function
-        | ActionRule.Isolate -> { s with isolate = true }
-        | ActionRule.Break breakerConfig -> { s with breaker = Some breakerConfig }
-        | ActionRule.Limit bulkheadConfig -> { s with limit = Some bulkheadConfig }
-        | ActionRule.Cutoff cutoffConfig -> { s with cutoff = Some cutoffConfig }
-        // Covered by inferConfig
-        | ActionRule.BaseUri _ | ActionRule.RelUri _ | ActionRule.Sla _ | ActionRule.Log _ -> s
-    Seq.fold folder { isolate = false; cutoff = None; limit = None; breaker = None }
+    (* Config.Http.Input.Value *)
 
-[<NoComparison>]
-type CallConfiguration =
-    {   timeout: TimeSpan option; sla: TimeSpan option
-        ``base``: Uri option; rel: Uri option
-        reqLog: LogMode; resLog: LogMode }
-
-let inferConfig xs: CallConfiguration * Uri option =
-    let folder s = function
-        | ActionRule.BaseUri uri -> { s with ``base`` = Some uri }
-        | ActionRule.RelUri uri -> { s with rel = Some uri }
-        | ActionRule.Sla (sla=sla; timeout=t) -> { s with sla = Some sla; timeout = Some t }
-        | ActionRule.Log (req=reqLevel; res=resLevel) -> { s with reqLog = reqLevel; resLog = resLevel }
-        // Covered by inferPolicy
-        | ActionRule.Isolate | ActionRule.Cutoff _ | ActionRule.Limit _ | ActionRule.Break _ -> s
-    let def =
-        {   reqLog = LogMode.Never; resLog = LogMode.Never
-            timeout = None; sla = None
-            ``base`` = None; rel = None }
-    let config = Seq.fold folder def xs
-    let effectiveAddress =
-        match config.``base``, config.rel with
-        | None, u | u, None -> u
-        | Some b, Some r -> Uri(b,r) |> Some
-    config, effectiveAddress
+    | Uri of Config.Http.Input.UriInput
+    | Sla of Config.Http.Input.SlaInput
+    | Log of Config.Http.Input.LogInput
 
 type PolicyParseException(json, inner) =
     inherit exn(sprintf "Failed to parse CallPolicy: '%s'" json, inner)
@@ -138,45 +81,33 @@ type RecursiveIncludeCallPolicyReferenceException(stack, policy, policies) =
 type IncludeNotFoundCallPolicyReferenceException(stack, policy, policies) =
     inherit CallPolicyReferenceException(sprintf "Include Rule at '%s' refers to undefined Policy '%s' (policies: %s)" stack policy policies)
 
-let asLogRule = function
-    | LogAmount.Always -> LogMode.Always
-    | LogAmount.Never -> LogMode.Never
-    | LogAmount.OnlyWhenDebugEnabled -> LogMode.OnlyWhenDebugEnabled
-
 module Constants =
     let [<Literal>] defaultCallName = "(default)"
 
+[<NoComparison>]
+[<RequireQualifiedAccess>]
+type Parsed =
+    | Policy of Config.Policy.Input.Value
+    | Http of Config.Http.Input.Value
+    | Unknown of Newtonsoft.Json.Linq.JObject
+
 let parseInternal defsJson =
     let defs: CallPolicyDefinition = try Newtonsoft.Deserialize defsJson with e -> PolicyParseException(defsJson, e) |> raise
-    let (|TimeSpanMs|) ms = TimeSpan.FromMilliseconds(float ms)
     let dumpDefs (serviceDef: CallPolicyServiceDefinition) = sprintf "%A" [ for x in serviceDef.policies -> x.Key, List.ofArray x.Value ]
-    let rec mapService stack (serviceDef : CallPolicyServiceDefinition) polRules : ActionRule seq =
-        let rec unroll stack (def : RuleDefinition) : ActionRule seq = seq {
+    let rec mapService stack (serviceDef : CallPolicyServiceDefinition) polRules : Parsed seq =
+        let rec unroll stack (def : Input) : Parsed seq = seq {
             match def with
-            | RuleDefinition.Isolate -> yield ActionRule.Isolate
-            | RuleDefinition.Uri(``base``=b; path=p) ->
-                match Option.toObj b with null -> () | b -> yield ActionRule.BaseUri(Uri b)
-                match Option.toObj p with null -> () | p -> yield ActionRule.RelUri(Uri(p, UriKind.Relative))
-            | RuleDefinition.Sla(slaMs=TimeSpanMs sla; timeoutMs=TimeSpanMs timeout) -> yield ActionRule.Sla(sla,timeout)
-            | RuleDefinition.Log(req, res) -> yield ActionRule.Log(asLogRule req,asLogRule res)
-            | RuleDefinition.Break(windowS, min, failPct, breakS, dryRun) ->
-                yield ActionRule.Break {
-                    window = TimeSpan.FromSeconds (float windowS)
-                    minThroughput = min
-                    errorRateThreshold = failPct/100.
-                    retryAfter = TimeSpan.FromSeconds breakS
-                    dryRun = dryRun |> Option.defaultValue false }
-            | RuleDefinition.Limit(maxParallel=dop; maxQueue=queue; dryRun=dryRun) ->
-                yield ActionRule.Limit {
-                    dop = dop
-                    queue = queue
-                    dryRun = dryRun |> Option.defaultValue false }
-            | RuleDefinition.Cutoff(timeoutMs=TimeSpanMs timeout; slaMs=slaMs; dryRun=dryRun) ->
-                yield ActionRule.Cutoff { timeout = timeout; sla = slaMs |> Option.map (|TimeSpanMs|); dryRun = dryRun |> Option.defaultValue false }
-            | RuleDefinition.Unknown ->
-                // TODO capture name of unknown rule, log once (NB recomputed every 10s so can't log every time)
-                () // Ignore ruleNames we don't yet support (allows us to define rules only newer instances understand transparently)
-            | RuleDefinition.Include includedPolicyName ->
+            | Input.Uri x -> yield Parsed.Http (Config.Http.Input.Value.Uri x)
+            | Input.Sla x -> yield Parsed.Http (Config.Http.Input.Value.Sla x)
+            | Input.Log x -> yield Parsed.Http (Config.Http.Input.Value.Log x)
+
+            | Input.Isolate -> yield Parsed.Policy Config.Policy.Input.Value.Isolate
+            | Input.Break x -> yield Parsed.Policy (Config.Policy.Input.Value.Break x)
+            | Input.Limit x -> yield Parsed.Policy (Config.Policy.Input.Value.Limit x)
+            | Input.Cutoff x -> yield Parsed.Policy (Config.Policy.Input.Value.Cutoff x)
+
+            | Input.Unknown x -> yield Parsed.Unknown x
+            | Input.Include includedPolicyName ->
                 match stack |> List.tryFindIndex (fun x -> x=includedPolicyName) with
                 | None -> ()
                 | Some x when x >= List.length stack - 1 -> () // can refer to serviceName or callName as long as it's not also a policyName
@@ -197,8 +128,8 @@ let parseInternal defsJson =
                     let mapped = mapService [policyName; callName; serviceName] serviceDef rules |> List.ofSeq
                     callName,
                     {   policyName = policyName
-                        policyConfig = inferPolicy mapped
-                        callConfig = inferConfig mapped
+                        policyConfig = mapped |> Seq.choose (function Parsed.Policy x -> Some x | _ -> None) |> Config.Policy.ofInputs
+                        callConfig = mapped |> Seq.choose (function Parsed.Http x -> Some x | _ -> None) |> Config.Http.ofInputs
                         raw = mapped }
             let defaultCallName, callsMap =
                 let explicitCalls = [ for KeyValue (callName,policyName) in serviceDef.calls -> mapCall callName policyName]

@@ -8,6 +8,27 @@ open Xunit
 type Parsing(output : Xunit.Abstractions.ITestOutputHelper) =
     let log = LogHooks.createLogger output
 
+    let [<Fact>] ``Unknown rules are identified`` () : unit =
+        let defs = """{ "services": { "default": {
+            "calls": {},
+            "defaultPolicy": "default",
+            "policies": {
+                "default" : [
+                    { "rule": "Dunno", "arg": "argh" }
+                ]
+            }
+}}}"""
+
+        let parsed = Parser.parse log defs
+        let unknowns =
+            [ for _call, pols in parsed.InternalState do
+                for (_policy, ({raw = raw},_rules)) in pols do
+                    for rule in raw do
+                        match rule with
+                        | Parser.Parsed.Unknown jo -> yield jo
+                        | _ -> () ]
+        test <@ unknowns |> List.exists (fun jo -> string jo.["arg"]="argh" ) @>
+
     let [<Fact>] ``Missing defaultPolicy specs are reported`` () =
         let defs = """{ "services": { "default": {
             "calls": {},
