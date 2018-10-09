@@ -2,14 +2,14 @@
 
 open CallPolly.Rules
 open Newtonsoft.Json
-open Newtonsoft.Json.Converters
+open Newtonsoft.Json.Converters.FSharp
 open System.Collections.Generic
 
 /// Wrappers for Newtonsoft.Json
 type Newtonsoft() =
     static let settings =
         let tmp = Settings.CreateDefault()
-        tmp.Converters.Add(Converters.OptionConverter())
+        tmp.Converters.Add(OptionConverter())
         tmp
 
     /// <summary>Deserializes value of given type from json string.</summary>
