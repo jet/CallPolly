@@ -126,6 +126,11 @@ module Http =
         let effectiveAddress =
             match config.``base``, config.rel with
             | None, u | u, None -> u
-            | Some b, Some r -> Uri(b,r) |> Some
+            | Some b, Some r ->
+                let baseWithTrailingSlash =
+                    let current = string b
+                    if current.EndsWith "/" then b
+                    else Uri(current+"/", UriKind.Absolute)
+                Uri(baseWithTrailingSlash,r) |> Some
         config, effectiveAddress
     let ofInputs xs = xs |> Seq.collect interpret |> fold

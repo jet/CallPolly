@@ -100,3 +100,22 @@ type Parsing(output : Xunit.Abstractions.ITestOutputHelper) =
 
         raisesWith <@ Parser.parse defs @>
             (fun x -> <@ x.Message.StartsWith "Include Rule at 'default->(default)->pol' refers recursively to 'pol' (policies: " @>)
+
+/// Testing derivation of Config info
+type ConfigParsing(output : Xunit.Abstractions.ITestOutputHelper) =
+    let log = LogHooks.createLogger output
+
+    let [<Fact>] ``Base Uris without trailing slashes are shimmed to prevent last portion before trailing slash being ignored`` () : unit =
+        let defs = """{ "services": { "svc": {
+            "calls": { "call": "default" },
+            "defaultPolicy": null,
+            "policies": {
+                "default" : [
+                    { "rule": "Uri", "base": "https://base/api", "path": "call" }
+                ]
+            }
+}}}"""
+
+        let res = Parser.parse(defs).CreatePolicy log
+        let effectiveUri = trap <@ res.TryFind("svc","call").Value.Config |> snd |> Option.get @>
+        test <@ "https://base/api/call" = string effectiveUri @>
