@@ -1,5 +1,6 @@
 ﻿module CallPolly.Config
 
+open Newtonsoft.Json.Converters.FSharp
 open System
 
 let (|TimeSpanMs|) ms = TimeSpan.FromMilliseconds(float ms)
@@ -60,7 +61,8 @@ module Policy =
 
 module Http =
     module Input =
-        [<Newtonsoft.Json.JsonConverter(typeof<Newtonsoft.Json.Converters.TypeSafeEnumConverter>)>]
+
+        [<Newtonsoft.Json.JsonConverter(typeof<TypeSafeEnumConverter>)>]
         [<NoComparison; RequireQualifiedAccess>]
         type LogLevel =
             | Always
