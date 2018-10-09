@@ -7,7 +7,7 @@
     <Company>Jet.com</Company>
     <Description>Apply systemwide resilience strategies consistently across subsystems, standing on Polly's shoulders</Description>
     <PackageProjectUrl>https://github.com/jet/CallPolly</PackageProjectUrl>
-    <RepositoryUrl>http://github.com/jet/CallPolly</RepositoryUrl>
+    <RepositoryUrl>https://github.com/jet/CallPolly</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageTags>polly circuitbreaker fsharp</PackageTags>
     <PackageLicenseUrl>https://github.com/jet/CallPolly/blob/master/LICENSE</PackageLicenseUrl>
