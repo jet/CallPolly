@@ -61,7 +61,9 @@ let policy = """{
             "policies": {
                 "default": [
                     { "rule": "Limit",      "maxParallel": 2, "maxQueue": 8 },
-                    { "rule": "Break",      "windowS": 5, "minRequests": 10, "failPct": 20, "breakS": 1 }
+                    { "rule": "Break",      "windowS": 5, "minRequests": 10, "failPct": 20, "breakS": 1 },
+                    { "rule:  "Uri":,       "base": "https://upstreamB" },
+                    { "rule:  "Log":,       "req": "Always" }
                 ]
             }
         }
@@ -69,9 +71,12 @@ let policy = """{
 }
 """
 
+exception BadGatewayException
+
 type Act =
     | Succeed
     | ThrowTimeout
+    | BadGateway
     | DelayMs of ms:int
     | DelayS of s:int
     | Composite of Act list
@@ -79,13 +84,14 @@ type Act =
         match this with
         | Succeed ->        return 42
         | ThrowTimeout ->   return raise <| TimeoutException()
+        | BadGateway ->     return raise BadGatewayException
         | DelayMs x ->      do! Async.Sleep(ms x)
                             return 43
         | DelayS x ->       do! Async.Sleep(s x)
                             return 43
         | Composite xs ->   for x in xs do
                                 do! x.Execute() |> Async.Ignore
-                            return 43}
+                            return 43 }
 
 type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
 
@@ -126,15 +132,17 @@ type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
     member __.ApiOneSecondSla a1 a2 = run "ingres" "api-a" <| _apiA a1 a2
     member __.ApiTenSecondSla b1 = run "ingres" "api-b" <| _apiB b1
 
-let (|Http200|Http500|Http503|Http504|) : Choice<int,exn> -> _ = function
+let (|Http200|Http500|Http502|Http503|Http504|) : Choice<int,exn> -> _ = function
     | Choice1Of2 _ -> Http200
     | Choice2Of2 (:? Polly.ExecutionRejectedException) -> Http503
+    | Choice2Of2 (:? BadGatewayException) -> Http502
     | Choice2Of2 (:? TimeoutException) -> Http504
     | Choice2Of2 _ -> Http500
 
 let (|Status|) : Choice<int,exn> -> int = function
     | Http200 -> 200
     | Http500 -> 500
+    | Http502 -> 502
     | Http503 -> 503
     | Http504 -> 504
 
@@ -147,6 +155,26 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let sut = Sut(log, policy)
         let! time, (Status res) = sut.ApiOneSecondSla Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
         test <@ res = 503 && between 1. 1.2 (let t = time.Elapsed in t.TotalSeconds) @>
+    }
+
+    let [<Fact>] ``Trapping - Arbitrary Polly expressions can be used to define a failure condition`` () = async {
+        let selectPolicy (cfg: CallPolly.Rules.CallConfig<Config.Http.Configuration*Uri option>) =
+            let config,effectiveUri = cfg.config
+            Polly.Policy
+                .Handle<TimeoutException>()
+                .Or<BadGatewayException>(fun _e ->
+                    effectiveUri |> Option.exists (fun (u : Uri) -> (string u).Contains "upstreamB")
+                    && config.reqLog = Config.Http.Log.Always)
+        let policy = Parser.parse(policy).CreatePolicy(log, selectPolicy)
+        let sut = Sut(log, policy)
+        let! r = Seq.replicate 9 Succeed |> Seq.map sut.ApiTenSecondSla |> Async.Parallel
+        test <@ r |> Array.forall ((=) 42) @>
+        let! Status res = sut.ApiTenSecondSla BadGateway |> Async.Catch
+        test <@ res = 502 @>
+        let! Status res = sut.ApiTenSecondSla ThrowTimeout |> Async.Catch
+        test <@ res = 500 @>
+        let! Status res = sut.ApiTenSecondSla Succeed |> Async.Catch
+        test <@ res = 503 @>
     }
 
     let [<Fact>] ``Propagation - Upstream timeouts can be mapped to 504s`` () = async {
