@@ -38,17 +38,17 @@ module Policy =
                 minThroughput = x.minRequests
                 errorRateThreshold = x.failPct/100.
                 retryAfter = TimeSpan.FromSeconds x.breakS
-                dryRun = x.dryRun |> Option.defaultValue false }
+                dryRun = defaultArg x.dryRun false }
         | Input.Value.Limit x ->
             Rule.Limit {
                 dop = x.maxParallel
                 queue = x.maxQueue
-                dryRun = x.dryRun |> Option.defaultValue false }
+                dryRun = defaultArg x.dryRun false }
         | Input.Value.Cutoff ({ timeoutMs=TimeSpanMs timeout } as x) ->
             Rule.Cutoff {
                 timeout = timeout
                 sla = x.slaMs |> Option.map (|TimeSpanMs|)
-                dryRun = x.dryRun |> Option.defaultValue false }
+                dryRun = defaultArg x.dryRun false }
 
     let private fold : Rule seq -> Rules.PolicyConfig =
         let folder (s : Rules.PolicyConfig) = function
@@ -103,8 +103,8 @@ module Http =
     let private interpret (x: Input.Value): Rule seq = seq {
         match x with
         | Input.Value.Uri { ``base``=b; path=p } ->
-            match Option.toObj b with null -> () | b -> yield Rule.BaseUri(Uri b)
-            match Option.toObj p with null -> () | p -> yield Rule.RelUri(Uri(p, UriKind.Relative))
+            match b with Some null | None -> () | Some b -> yield Rule.BaseUri(Uri b)
+            match p with Some null | None -> () | Some p -> yield Rule.RelUri(Uri(p, UriKind.Relative))
         | Input.Value.Sla { slaMs=TimeSpanMs sla; timeoutMs=TimeSpanMs timeout } -> yield Rule.Sla(sla,timeout)
         | Input.Value.Log { req=req; res=res } -> yield Rule.Log(toRuleLog req,toRuleLog res) }
 

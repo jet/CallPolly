@@ -5,6 +5,10 @@ open Swensen.Unquote
 open System
 open Xunit
 
+// shims for F# < 4, can be removed if we stop supporting that
+module private Seq =
+    let replicate n x = seq { for i in 1..n do yield x }
+
 [<AutoOpen>]
 module Helpers =
     let ms x = TimeSpan.FromMilliseconds (float x)

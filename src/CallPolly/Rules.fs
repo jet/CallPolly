@@ -8,6 +8,10 @@ open System.Diagnostics
 open System.Threading
 open System.Threading.Tasks
 
+// shims for F# < 4, can be removed if we stop supporting that
+module private Option =
+    let toNullable = function Some x -> Nullable x | None -> Nullable ()
+
 type BreakerConfig = { window: TimeSpan; minThroughput: int; errorRateThreshold: float; retryAfter: TimeSpan; dryRun: bool }
 type BulkheadConfig = { dop: int; queue: int; dryRun: bool }
 type CutoffConfig = { timeout: TimeSpan; sla: TimeSpan option; dryRun: bool }

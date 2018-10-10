@@ -6,12 +6,13 @@ open Newtonsoft.Json.Converters.FSharp
 open System
 open System.Collections.Generic
 
-/// Wrappers for Newtonsoft.Json
+// shims for F# < 4, can be removed if we stop supporting that
+module private Option =
+    let ofObj = function null -> None | x -> Some x
+
+/// Wrappers for Newtonsoft.Json - OptionConverter is required
 type Newtonsoft() =
-    static let settings =
-        let tmp = Settings.CreateDefault()
-        tmp.Converters.Add(OptionConverter())
-        tmp
+    static let settings = Settings.CreateCorrect(OptionConverter())
 
     /// <summary>Deserializes value of given type from json string.</summary>
     /// <param name="json">Json string to deserialize.</param>
