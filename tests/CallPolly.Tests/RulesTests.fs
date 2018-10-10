@@ -83,17 +83,15 @@ module Core =
     let baseParsed = mkHttp <| Config.Http.Input.Value.Uri { ``base``=Some (string baseUri); path=None }
     let logParsed = mkHttp <| Config.Http.Input.Value.Log { req=Config.Http.Input.LogLevel.OnlyWhenDebugEnabled; res=Config.Http.Input.LogLevel.OnlyWhenDebugEnabled }
 
-    let defConfig : Config.Http.Configuration * Uri option =
+    let defConfig : Config.Http.Configuration =
         {   timeout = Some (s 5); sla = Some (s 1)
             ``base`` = Some baseUri; rel = None
-            reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled },
-        Some baseUri
+            reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled }
     let noPolicy = { isolate = false; cutoff = None; limit = None; breaker = None; }
-    let heavyConfig : Config.Http.Configuration * Uri option =
+    let heavyConfig : Config.Http.Configuration =
         {   timeout = Some (s 10); sla = Some (s 5)
             ``base`` = None; rel = None
-            reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled },
-        None
+            reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled }
     let heavyRules = { isolate = true; cutoff = Some cutoffConfig; limit = Some limitConfig; breaker = Some breakConfig }
     let mkParsedSla sla timeout = Parser.ParsedRule.Http (Config.Http.Input.Value.Sla {slaMs = sla; timeoutMs = timeout })
 

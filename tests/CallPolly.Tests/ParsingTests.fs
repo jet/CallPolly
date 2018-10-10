@@ -117,5 +117,5 @@ type ConfigParsing(output : Xunit.Abstractions.ITestOutputHelper) =
 }}}"""
 
         let res = Parser.parse(defs).CreatePolicy log
-        let effectiveUri = trap <@ res.TryFind("svc","call").Value.Config |> snd |> Option.get @>
+        let effectiveUri = trap <@ res.TryFind("svc","call").Value.Config.EffectiveUri |> Option.get @>
         test <@ "https://base/api/call" = string effectiveUri @>

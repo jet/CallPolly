@@ -113,8 +113,18 @@ module Http =
         {   timeout: TimeSpan option; sla: TimeSpan option
             ``base``: Uri option; rel: Uri option
             reqLog: Log; resLog: Log }
+        member __.EffectiveUri : Uri option =
+            match __.``base``, __.rel with
+            | None, None -> None
+            | None, u | u, None -> u
+            | Some b, Some r ->
+                let baseWithTrailingSlash =
+                    let current = string b
+                    if current.EndsWith "/" then b
+                    else Uri(current+"/", UriKind.Absolute)
+                Uri(baseWithTrailingSlash,r) |> Some
 
-    let private fold (xs : Rule seq): Configuration * Uri option =
+    let private fold (xs : Rule seq): Configuration =
         let folder s = function
             | Rule.BaseUri uri -> { s with ``base`` = Some uri }
             | Rule.RelUri uri -> { s with rel = Some uri }
@@ -124,15 +134,5 @@ module Http =
             {   reqLog = Log.Never; resLog = Log.Never
                 timeout = None; sla = None
                 ``base`` = None; rel = None }
-        let config = Seq.fold folder def xs
-        let effectiveAddress =
-            match config.``base``, config.rel with
-            | None, u | u, None -> u
-            | Some b, Some r ->
-                let baseWithTrailingSlash =
-                    let current = string b
-                    if current.EndsWith "/" then b
-                    else Uri(current+"/", UriKind.Absolute)
-                Uri(baseWithTrailingSlash,r) |> Some
-        config, effectiveAddress
+        Seq.fold folder def xs
     let ofInputs xs = xs |> Seq.collect interpret |> fold
