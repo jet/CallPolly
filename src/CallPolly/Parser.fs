@@ -3,6 +3,7 @@
 open CallPolly.Rules
 open Newtonsoft.Json
 open Newtonsoft.Json.Converters.FSharp
+open System
 open System.Collections.Generic
 
 /// Wrappers for Newtonsoft.Json
@@ -159,8 +160,8 @@ type ParseResult(services: ParsedService[]) =
               [ for call in x.calls ->
                     let callConfig =
                         {   policyName = call.policyName
-                            policyConfig = call.rules |> Seq.choose (function ParsedRule.Policy x -> Some x | _ -> None) |> Config.Policy.ofInputs
-                            callConfig = call.rules |> Seq.choose (function ParsedRule.Http x -> Some x | _ -> None) |> Config.Http.ofInputs
+                            policy = call.rules |> Seq.choose (function ParsedRule.Policy x -> Some x | _ -> None) |> Config.Policy.ofInputs
+                            config = call.rules |> Seq.choose (function ParsedRule.Http x -> Some x | _ -> None) |> Config.Http.ofInputs
                         }
                     call.callName, callConfig ] }
     let mapped = services |> Seq.map mapService
@@ -183,9 +184,13 @@ type ParseResult(services: ParsedService[]) =
                 for call in service.calls ->
                     call.callName, call.rules } }
 
-    member __.CreatePolicy log : Policy<_> =
-        Policy.Create(log, mapped)
-    member __.UpdatePolicy( x : Policy<_>) : (string * (string * ChangeLevel) list) list =
+    member __.CreatePolicy(log, ?createFailurePolicyBuilder : CallConfig<_> -> Polly.PolicyBuilder) : Policy<_> =
+        let createFailurePolicyBuilder =
+            match createFailurePolicyBuilder with
+            | None -> fun _callConfig -> Polly.Policy.Handle<TimeoutException>()
+            | Some custom -> custom
+        Policy(log, createFailurePolicyBuilder, mapped)
+    member __.UpdatePolicy(x : Policy<_>) : (string * (string * ChangeLevel) list) list =
         x.UpdateFrom mapped
 
 let parse defs : ParseResult =
