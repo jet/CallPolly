@@ -3,3 +3,6 @@ if ERRORLEVEL 1 (echo Error building CallPolly; exit /b 1)
 
 dotnet test tests/CallPolly.Tests --configuration Release
 if ERRORLEVEL 1 (echo Error testing CallPolly; exit /b 1)
+
+dotnet test tests/CallPolly.Acceptance --configuration Release
+if ERRORLEVEL 1 (echo Error acceptance testing CallPolly; exit /b 1)

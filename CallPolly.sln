@@ -12,6 +12,8 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = ".project", ".project", "{6047ADD6-C48C-4583-A5C6-58FDF7A0DC10}"
 	ProjectSection(SolutionItems) = preProject
 		build.cmd = build.cmd
+		Directory.Build.props = Directory.Build.props
+		global.json = global.json
 		LICENSE = LICENSE
 		README.md = README.md
 		SECURITY.md = SECURITY.md

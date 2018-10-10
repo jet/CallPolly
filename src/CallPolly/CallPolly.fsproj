@@ -2,24 +2,10 @@
 
   <PropertyGroup>
     <TargetFrameworks>netstandard2.0;net461</TargetFrameworks>
-    <VersionPrefix>0.0.1</VersionPrefix>
-    <Authors>@jet @bartelink and contributors</Authors>
-    <Company>Jet.com</Company>
-    <Description>Apply systemwide resilience strategies consistently across subsystems, standing on Polly's shoulders</Description>
-    <PackageProjectUrl>https://github.com/jet/CallPolly</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/jet/CallPolly</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
-    <PackageTags>polly circuitbreaker fsharp</PackageTags>
-    <PackageLicenseUrl>https://github.com/jet/CallPolly/blob/master/LICENSE</PackageLicenseUrl>
-    <Copyright>Copyright © 2018</Copyright>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
     <WarningLevel>5</WarningLevel>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
-    <WarningLevel>5</WarningLevel>
+    <IsTestProject>false</IsTestProject>
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+    <DisableImplicitSystemValueTupleReference>true</DisableImplicitSystemValueTupleReference>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,7 +17,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jet.JsonNet.Converters" Version="0.0.1-CI67733" />
+    <PackageReference Include="FSharp.Core" Version="3.1.2.5" Condition=" '$(TargetFramework)' == 'net461' " />
+    <PackageReference Include="FSharp.Core" Version="4.3.4" Condition=" '$(TargetFramework)' == 'netstandard2.0' " />
+    <PackageReference Include="Jet.JsonNet.Converters" Version="0.0.3-CI69140" />
     <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
     <PackageReference Include="Polly" Version="6.1.0" />
     <PackageReference Include="Serilog" Version="2.7.1" />
