@@ -24,6 +24,7 @@ module Policy =
 
     [<NoComparison>]
     [<RequireQualifiedAccess>]
+    [<Newtonsoft.Json.JsonConverter(typeof<UnionConverter>, "rule")>]
     type Rule =
         | Break of Rules.BreakerConfig
         | Limit of Rules.BulkheadConfig
@@ -82,6 +83,7 @@ module Http =
             | Log of LogInput
 
     [<RequireQualifiedAccess>]
+    [<Newtonsoft.Json.JsonConverter(typeof<TypeSafeEnumConverter>)>]
     type LogLevel =
         | Always
         | Never
@@ -94,6 +96,7 @@ module Http =
 
     [<NoComparison>]
     [<RequireQualifiedAccess>]
+    [<Newtonsoft.Json.JsonConverter(typeof<UnionConverter>, "rule")>]
     type Rule =
         | BaseUri of Uri: Uri
         | RelUri of Uri: Uri

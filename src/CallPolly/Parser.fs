@@ -12,12 +12,18 @@ module private Option =
 
 /// Wrappers for Newtonsoft.Json - OptionConverter is required
 type Newtonsoft() =
-    static let settings = Settings.CreateCorrect(OptionConverter())
+    static let defaultSettings = Settings.CreateCorrect(OptionConverter())
+    static member indentSettings = Settings.CreateCorrect(OptionConverter(),indent=true)
 
     /// <summary>Deserializes value of given type from json string.</summary>
     /// <param name="json">Json string to deserialize.</param>
     static member Deserialize<'T> (json : string) : 'T =
-        JsonConvert.DeserializeObject<'T>(json, settings)
+        JsonConvert.DeserializeObject<'T>(json, defaultSettings)
+
+    /// <summary>Serializes value of given type from json string.</summary>
+    /// <param name="json">Json string to deserialize.</param>
+    static member Serialize<'T>(x:'T, ?settings) : string =
+        JsonConvert.SerializeObject(x, defaultArg settings defaultSettings)
 
 /// Defines a set of base call policies for a system, together with a set of service-specific rules
 type [<NoComparison; NoEquality>]

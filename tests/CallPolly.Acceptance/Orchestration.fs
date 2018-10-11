@@ -261,3 +261,11 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         test <@ match counts with [200,successCount; 503,rejectCount] -> successCount < 100 && rejectCount > 800 | x -> failwithf "%A" x @>
         test <@ between 0.5 2. (let t = time.Elapsed in t.TotalSeconds) @>
     }
+
+    let [<Fact>] ``Can pretty print internal state dump for diagnostics using existing converters``() =
+        let readDefinitions () = policy
+        //let readDefinitions () = System.Environment.GetEnvironmentVariable "CALL_POLICY" |> System.IO.File.ReadAllText
+        let res = Context.Create(log, readDefinitions)
+        res.CheckForChanges()
+        let renderAsPrettyJson x = Parser.Newtonsoft.Serialize(x, Parser.Newtonsoft.indentSettings)
+        res.DumpInternalState() |> renderAsPrettyJson |> output.WriteLine

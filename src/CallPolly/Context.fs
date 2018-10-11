@@ -45,9 +45,9 @@ type CallPolicyInternalState =
         config: Rules.CallConfig<Config.Http.Configuration>; state: Rules.GovernorState }
 
 type Context private (inner : Rules.Policy<_>, logChanges, tryReadUpdates) =
-    static member Create(log,createPolicyBuilder,readDefinitions) =
+    static member Create(log,readDefinitions,?createFailurePolicyBuilder) =
         let initialParse,tryReadUpdates = Impl.readAndParseCycle log readDefinitions
-        let inner = initialParse.CreatePolicy(log, createPolicyBuilder)
+        let inner = initialParse.CreatePolicy(log, ?createFailurePolicyBuilder=createFailurePolicyBuilder)
         Context(inner, Impl.logChanges log, tryReadUpdates)
 
     member __.Policy = inner
@@ -60,6 +60,6 @@ type Context private (inner : Rules.Policy<_>, logChanges, tryReadUpdates) =
             logChanges changes
 
     member __.DumpInternalState() = seq {
-        for service, actions in inner.InternalState do
-            for action, (config, state) in actions do
-                yield { service = service; action=action; baseUri=config.config.EffectiveUri; config=config; state=state } }
+        for service, calls in inner.InternalState do
+            for action, (cfg, state) in calls do
+                yield { service=service; action=action; baseUri=cfg.config.EffectiveUri; config=cfg; state=state } }
