@@ -92,12 +92,12 @@ module Core =
     let defConfig : Config.Http.Configuration =
         {   timeout = Some (s 5); sla = Some (s 1)
             ``base`` = Some baseUri; rel = None
-            reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled }
+            reqLog = Config.Http.LogLevel.OnlyWhenDebugEnabled; resLog = Config.Http.LogLevel.OnlyWhenDebugEnabled }
     let noPolicy = { isolate = false; cutoff = None; limit = None; breaker = None; }
     let heavyConfig : Config.Http.Configuration =
         {   timeout = Some (s 10); sla = Some (s 5)
             ``base`` = None; rel = None
-            reqLog = Config.Http.Log.OnlyWhenDebugEnabled; resLog = Config.Http.Log.OnlyWhenDebugEnabled }
+            reqLog = Config.Http.LogLevel.OnlyWhenDebugEnabled; resLog = Config.Http.LogLevel.OnlyWhenDebugEnabled }
     let heavyRules = { isolate = true; cutoff = Some cutoffConfig; limit = Some limitConfig; breaker = Some breakConfig }
     let mkParsedSla sla timeout = Parser.ParsedRule.Http (Config.Http.Input.Value.Sla {slaMs = sla; timeoutMs = timeout })
 

@@ -82,15 +82,15 @@ module Http =
             | Log of LogInput
 
     [<RequireQualifiedAccess>]
-    type Log =
+    type LogLevel =
         | Always
         | Never
         | OnlyWhenDebugEnabled
 
     let toRuleLog = function
-        | Input.LogLevel.Always -> Log.Always
-        | Input.LogLevel.Never -> Log.Never
-        | Input.LogLevel.OnlyWhenDebugEnabled -> Log.OnlyWhenDebugEnabled
+        | Input.LogLevel.Always -> LogLevel.Always
+        | Input.LogLevel.Never -> LogLevel.Never
+        | Input.LogLevel.OnlyWhenDebugEnabled -> LogLevel.OnlyWhenDebugEnabled
 
     [<NoComparison>]
     [<RequireQualifiedAccess>]
@@ -98,7 +98,7 @@ module Http =
         | BaseUri of Uri: Uri
         | RelUri of Uri: Uri
         | Sla of sla: TimeSpan * timeout: TimeSpan
-        | Log of req: Log * res: Log
+        | Log of req: LogLevel * res: LogLevel
 
     let private interpret (x: Input.Value): Rule seq = seq {
         match x with
@@ -112,7 +112,7 @@ module Http =
     type Configuration =
         {   timeout: TimeSpan option; sla: TimeSpan option
             ``base``: Uri option; rel: Uri option
-            reqLog: Log; resLog: Log }
+            reqLog: LogLevel; resLog: LogLevel }
         member __.EffectiveUri : Uri option =
             match __.``base``, __.rel with
             | None, None -> None
@@ -131,7 +131,7 @@ module Http =
             | Rule.Sla (sla=sla; timeout=t) -> { s with sla = Some sla; timeout = Some t }
             | Rule.Log (req=reqLevel; res=resLevel) -> { s with reqLog = reqLevel; resLog = resLevel }
         let def =
-            {   reqLog = Log.Never; resLog = Log.Never
+            {   reqLog = LogLevel.Never; resLog = LogLevel.Never
                 timeout = None; sla = None
                 ``base`` = None; rel = None }
         Seq.fold folder def xs

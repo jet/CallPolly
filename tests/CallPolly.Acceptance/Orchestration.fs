@@ -167,7 +167,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
                 .Handle<TimeoutException>()
                 .Or<BadGatewayException>(fun _e ->
                     cfg.config.EffectiveUri |> Option.exists (fun (u : Uri) -> (string u).Contains "upstreamb")
-                    && cfg.config.reqLog = Config.Http.Log.Always)
+                    && cfg.config.reqLog = Config.Http.LogLevel.Always)
         let policy = Parser.parse(policy).CreatePolicy(log, selectPolicy)
         let sut = Sut(log, policy)
         let! r = Seq.replicate 9 Succeed |> Seq.map sut.ApiTenSecondSla |> Async.Parallel
