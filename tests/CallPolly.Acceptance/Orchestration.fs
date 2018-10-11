@@ -31,10 +31,10 @@ let policy = """{
             "defaultPolicy": null,
             "policies": {
                 "quick": [
-                    { "rule": "Cutoff",     "timeoutMs": 1000, "slaMs": 500 }
+                    { "rule": "Cutoff", "timeoutMs": 1000, "slaMs": 500 }
                 ],
                 "slow": [
-                    { "rule": "Cutoff",     "timeoutMs": 10000, "slaMs": 5000 }
+                    { "rule": "Cutoff", "timeoutMs": 10000, "slaMs": 5000 }
                 ]
             }
         },
@@ -47,10 +47,10 @@ let policy = """{
             "defaultPolicy": null,
             "policies": {
                 "default": [
-                    { "rule": "Limit",      "maxParallel": 10, "maxQueue": 3 }
+                    { "rule": "Limit",  "maxParallel": 10, "maxQueue": 3 }
                 ],
                 "looser": [
-                    { "rule": "Limit",      "maxParallel": 100, "maxQueue": 300 }
+                    { "rule": "Limit",  "maxParallel": 100, "maxQueue": 300 }
                 ],
                 "defaultBroken": [
                     { "rule": "Isolate" }
@@ -64,10 +64,10 @@ let policy = """{
             "defaultPolicy": null,
             "policies": {
                 "default": [
-                    { "rule": "Limit",      "maxParallel": 2, "maxQueue": 8 },
-                    { "rule": "Break",      "windowS": 5, "minRequests": 10, "failPct": 20, "breakS": 1 },
-                    { "rule": "Uri",        "base": "https://upstreamb" },
-                    { "rule": "Log",        "req": "Always", "res": "Always" }
+                    { "rule": "Limit",  "maxParallel": 2, "maxQueue": 8 },
+                    { "rule": "Break",  "windowS": 5, "minRequests": 10, "failPct": 20, "breakS": 1 },
+                    { "rule": "Uri",    "base": "https://upstreamb" },
+                    { "rule": "Log",    "req": "Always", "res": "Always" }
                 ]
             }
         }
@@ -158,7 +158,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
         let! time, (Status res) = sut.ApiOneSecondSla Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
-        test <@ res = 503 && between 1. 1.2 (let t = time.Elapsed in t.TotalSeconds) @>
+        test <@ res = 503 && between 1. 2. (let t = time.Elapsed in t.TotalSeconds) @>
     }
 
     let [<Fact>] ``Trapping - Arbitrary Polly expressions can be used to define a failure condition`` () = async {
