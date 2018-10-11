@@ -1,4 +1,4 @@
-﻿module CallPolly.Acceptance.Orchestration
+﻿module CallPolly.Acceptance
 
 open CallPolly
 open Swensen.Unquote
@@ -262,7 +262,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         test <@ between 0.5 2. (let t = time.Elapsed in t.TotalSeconds) @>
     }
 
-    let [<Fact>] ``Can pretty print internal state dump for diagnostics using existing converters``() =
+    let [<Fact>] ``DumpState - Pretty print internal state dump for diagnostics using existing converters``() =
         let readDefinitions () = policy
         //let readDefinitions () = System.Environment.GetEnvironmentVariable "CALL_POLICY" |> System.IO.File.ReadAllText
         let res = Context.Create(log, readDefinitions)
