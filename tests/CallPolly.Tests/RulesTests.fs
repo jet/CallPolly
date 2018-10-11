@@ -32,35 +32,35 @@ module Core =
         "defaultPolicy": "default",
         "policies": {
             "defaultLog": [
-                { "rule": "Log",        "req": "OnlyWhenDebugEnabled", "res": "OnlyWhenDebugEnabled" }
+                { "rule": "Log",    "req": "OnlyWhenDebugEnabled", "res": "OnlyWhenDebugEnabled" }
             ],
             "default": [
-                { "rule": "Include",    "policy": "defaultLog" },
-                { "rule": "Sla",        "slaMs": 1000, "timeoutMs": 5000 }
+                { "rule": "Include","policy": "defaultLog" },
+                { "rule": "Sla",    "slaMs": 1000, "timeoutMs": 5000 }
             ],
             "edd": [
-                { "rule": "Uri",        "base": "http://base/" },
-                { "rule": "Include",    "policy": "default" }
+                { "rule": "Uri",    "base": "http://base/" },
+                { "rule": "Include","policy": "default" }
                 ],
             "limit": [
-                { "rule": "Limit",      "maxParallel": 2, "maxQueue": 3, "dryRun": true }
+                { "rule": "Limit",  "maxParallel": 2, "maxQueue": 3, "dryRun": true }
             ],
             "break": [
-                { "rule": "Break",      "windowS": 5, "minRequests": 100, "failPct": 20, "breakS": 1 }
+                { "rule": "Break",  "windowS": 5, "minRequests": 100, "failPct": 20, "breakS": 1 }
             ],
             "defaultBroken": [
                 { "rule": "Isolate" }
             ],
             "cutoff": [
-                { "rule": "Cutoff",     "timeoutMs": 500, "dryRun": true }
+                { "rule": "Cutoff", "timeoutMs": 500, "dryRun": true }
             ],
             "heavy": [
-                { "rule": "Include",    "policy": "defaultLog" },
-                { "rule": "Include",    "policy": "limit" },
-                { "rule": "Include",    "policy": "break" },
-                { "rule": "Include",    "policy": "cutoff" },
-                { "rule": "Sla",        "slaMs": 5000, "timeoutMs": 10000 },
-                { "rule": "Include",    "policy": "defaultBroken" }
+                { "rule": "Include","policy": "defaultLog" },
+                { "rule": "Include","policy": "limit" },
+                { "rule": "Include","policy": "break" },
+                { "rule": "Include","policy": "cutoff" },
+                { "rule": "Sla",    "slaMs": 5000, "timeoutMs": 10000 },
+                { "rule": "Include","policy": "defaultBroken" }
             ],
             "UnknownUnknown": [
                 { "rule": "NotYetImplemented" }
@@ -261,7 +261,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
         "defaultPolicy": "def",
         "policies": {
             "def": [
-                { "rule": "Isolate"  }
+                { "rule": "Isolate" }
             ]
         }
 }}}"""
