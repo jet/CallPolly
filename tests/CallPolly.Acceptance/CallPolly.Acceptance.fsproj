@@ -10,7 +10,7 @@
 
   <ItemGroup>
     <Compile Include="..\CallPolly.Tests\Infrastructure.fs" Link="Infrastructure.fs" />
-    <Compile Include="Orchestration.fs" />
+    <Compile Include="Scenarios.fs" />
   </ItemGroup>
 
   <ItemGroup>
