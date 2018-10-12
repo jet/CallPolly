@@ -56,7 +56,7 @@ and [<NoComparison; NoEquality>]
 and [<NoComparison>]
     [<RequireQualifiedAccess>]
     [<Newtonsoft.Json.JsonConverter(typeof<UnionConverter>, "rule", "Unknown")>] Input =
-    | Include of policy: string
+    | Include of IncludeInput
     /// Catch-all case when a ruleName is unknown (allows us to add new policies but have existing instances safely ignore it)
     | Unknown of Newtonsoft.Json.Linq.JObject
 
@@ -72,6 +72,7 @@ and [<NoComparison>]
     | Uri of Config.Http.Input.UriInput
     | Sla of Config.Http.Input.SlaInput
     | Log of Config.Http.Input.LogInput
+and IncludeInput = { [<JsonRequired>]policy: string }
 
 type PolicyParseException(json, inner) =
     inherit exn(sprintf "Failed to parse CallPolicy: '%s'" json, inner)
@@ -119,7 +120,7 @@ let parseInternal defsJson : ParsedService seq =
             | Input.Cutoff x -> yield ParsedRule.Policy (Config.Policy.Input.Value.Cutoff x)
 
             | Input.Unknown x -> yield ParsedRule.Unknown x
-            | Input.Include includedPolicyName ->
+            | Input.Include { policy=includedPolicyName} ->
                 match stack |> List.tryFindIndex (fun x -> x=includedPolicyName) with
                 | None -> ()
                 | Some x when x >= List.length stack - 1 -> () // can refer to serviceName or callName as long as it's not also a policyName
@@ -139,9 +140,7 @@ let parseInternal defsJson : ParsedService seq =
                 | false, _ -> raise <| NotFoundCallPolicyReferenceException(serviceName, callName, policyName, dumpDefs serviceDef)
                 | true, rules ->
                     let mapped = mapService [policyName; callName; serviceName] serviceDef rules |> List.ofSeq
-                    {   callName = callName
-                        policyName = policyName
-                        rules = mapped }
+                    { callName = callName; policyName = policyName; rules = mapped }
             let defaultCallName, callsMap =
                 let explicitCalls = [ for KeyValue (callName,policyName) in serviceDef.calls -> mapCall callName policyName]
                 match Option.ofObj serviceDef.defaultPolicy with
