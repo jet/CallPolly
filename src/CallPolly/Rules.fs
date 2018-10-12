@@ -226,7 +226,7 @@ type ServiceConfig<'TConfig> =
 type private ServicePolicy<'TConfig when 'TConfig: equality> private
     (   makeCallPolicy : (*callName:*) string -> CallConfig<'TConfig> -> CallPolicy<'TConfig>,
         defaultCallName : string option,
-        calls: ConcurrentDictionary<string,CallPolicy<'TConfig>>) =
+        calls: ConcurrentDictionary<(*callName:*) string,CallPolicy<'TConfig>>) =
     let mutable defaultCallName = defaultCallName
 
     new (makeCallPolicy, cfg: ServiceConfig<'TConfig>) =

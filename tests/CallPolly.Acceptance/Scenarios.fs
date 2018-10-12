@@ -259,13 +259,22 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let! time, res = List.init 1000 alternateBetweenTwoUpstreams |> Async.Parallel |> Stopwatch.Time
         let counts = res |> Seq.countBy (function Status s -> s) |> Seq.sortBy fst |> List.ofSeq
         test <@ match counts with [200,successCount; 503,rejectCount] -> successCount < 100 && rejectCount > 800 | x -> failwithf "%A" x @>
-        test <@ between 0.5 2. (let t = time.Elapsed in t.TotalSeconds) @>
+        test <@ between 0.3 2. (let t = time.Elapsed in t.TotalSeconds) @>
     }
 
+    let readDefinitions () = policy
+    // Uncomment to read from, or debug using a custom policy
+    //let readDefinitions () = System.Environment.GetEnvironmentVariable "CALL_POLICY" |> System.IO.File.ReadAllText
+
+    let renderAsPrettyJson x = Parser.Newtonsoft.Serialize(x, Parser.Newtonsoft.indentSettings)
+
     let [<Fact>] ``DumpState - Pretty print internal state dump for diagnostics using existing converters``() =
-        let readDefinitions () = policy
-        //let readDefinitions () = System.Environment.GetEnvironmentVariable "CALL_POLICY" |> System.IO.File.ReadAllText
         let res = Context.Create(log, readDefinitions)
+        // This should not result in any processing, but we keep it as a sanity check
+        // the normal use is to periodically trigger a check for new policies by running it
         res.CheckForChanges()
-        let renderAsPrettyJson x = Parser.Newtonsoft.Serialize(x, Parser.Newtonsoft.indentSettings)
         res.DumpInternalState() |> renderAsPrettyJson |> output.WriteLine
+
+    let [<Fact>] ``DumpWarnings - Pretty print internal state dump for diagnostics using existing converters``() =
+        let source = readDefinitions ()
+        Parser.parse(source).Warnings |> renderAsPrettyJson |> output.WriteLine
