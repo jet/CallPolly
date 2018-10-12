@@ -102,12 +102,12 @@ type ParsedRule =
 [<NoComparison>]
 type ParsedCall = { callName: string; policyName: string; rules: ParsedRule list }
 [<NoComparison>]
-type ParsedService = { serviceName: string; defaultCallName: string option; calls: ParsedCall list }
+type ParsedService = { serviceName: string; defaultCallName: string option; calls: ParsedCall[] }
 
-let parseInternal defsJson : ParsedService seq =
+let parseInternal defsJson : ParsedService [] =
     let defs: CallPolicyDefinition = try Newtonsoft.Deserialize defsJson with e -> PolicyParseException(defsJson, e) |> raise
     let dumpDefs (serviceDef: CallPolicyServiceDefinition) = sprintf "%A" [ for x in serviceDef.policies -> x.Key, List.ofArray x.Value ]
-    let rec mapService stack (serviceDef : CallPolicyServiceDefinition) polRules : ParsedRule seq =
+    let rec mapService stack (serviceDef : CallPolicyServiceDefinition) polRules : ParsedRule list =
         let rec unroll stack (def : Input) : ParsedRule seq = seq {
             match def with
             | Input.Uri x -> yield ParsedRule.Http (Config.Http.Input.Value.Uri x)
@@ -120,7 +120,7 @@ let parseInternal defsJson : ParsedService seq =
             | Input.Cutoff x -> yield ParsedRule.Policy (Config.Policy.Input.Value.Cutoff x)
 
             | Input.Unknown x -> yield ParsedRule.Unknown x
-            | Input.Include { policy=includedPolicyName} ->
+            | Input.Include { policy=includedPolicyName } ->
                 match stack |> List.tryFindIndex (fun x -> x=includedPolicyName) with
                 | None -> ()
                 | Some x when x >= List.length stack - 1 -> () // can refer to serviceName or callName as long as it's not also a policyName
@@ -130,29 +130,30 @@ let parseInternal defsJson : ParsedService seq =
                 | false, _ -> raise <| IncludeNotFoundCallPolicyReferenceException(String.concat "->" (List.rev stack), includedPolicyName, dumpDefs serviceDef)
                 | true, defs ->
                     let stack' = includedPolicyName :: stack
-                    yield! defs |> Seq.collect (unroll stack') }
-        polRules |> Seq.collect (unroll stack)
+                    for d in defs do
+                        yield! unroll stack' d }
+        [ for r in polRules do
+            yield! unroll stack r ]
 
-    seq {
-        for KeyValue (serviceName,serviceDef) in defs.services ->
+    [|  for KeyValue (serviceName,serviceDef) in defs.services ->
             let mapCall callName policyName =
                 match serviceDef.policies.TryGetValue policyName with
                 | false, _ -> raise <| NotFoundCallPolicyReferenceException(serviceName, callName, policyName, dumpDefs serviceDef)
                 | true, rules ->
-                    let mapped = mapService [policyName; callName; serviceName] serviceDef rules |> List.ofSeq
+                    let mapped = mapService [policyName; callName; serviceName] serviceDef rules
                     { callName = callName; policyName = policyName; rules = mapped }
             let defaultCallName, callsMap =
-                let explicitCalls = [ for KeyValue (callName,policyName) in serviceDef.calls -> mapCall callName policyName]
+                let explicitCalls = seq { for KeyValue (callName,policyName) in serviceDef.calls -> mapCall callName policyName }
                 match Option.ofObj serviceDef.defaultPolicy with
                 | Some defPolName when not (serviceDef.policies.ContainsKey defPolName) ->
                     invalidOp (sprintf "Could not find a default policy entitled '%s' (policies: %s)" defPolName (dumpDefs serviceDef))
                 | Some _ when serviceDef.calls.ContainsKey Constants.defaultCallName ->
                     invalidOp (sprintf "Service '%s' may not define a Call with the reserved name '%s' when a 'defaultPolicy' is declared" serviceName Constants.defaultCallName)
                 | Some defPolName ->
-                    Some Constants.defaultCallName, mapCall Constants.defaultCallName defPolName :: explicitCalls
+                    Some Constants.defaultCallName, [| yield mapCall Constants.defaultCallName defPolName; yield! explicitCalls |]
                 | _ ->
-                    None, explicitCalls
-            { serviceName = serviceName; defaultCallName = defaultCallName; calls = callsMap } }
+                    None, Array.ofSeq explicitCalls
+            { serviceName = serviceName; defaultCallName = defaultCallName; calls = callsMap } |]
 
 [<NoComparison>]
 type Warning = { serviceName: string; callName: string; unknownRule: Newtonsoft.Json.Linq.JObject }
@@ -163,12 +164,11 @@ type ParseResult(services: ParsedService[]) =
         {   serviceName = x.serviceName
             defaultCallName = x.defaultCallName
             callsMap =
-              [ for call in x.calls ->
+                [ for call in x.calls ->
                     let callConfig =
                         {   policyName = call.policyName
                             policy = call.rules |> Seq.choose (function ParsedRule.Policy x -> Some x | _ -> None) |> Config.Policy.ofInputs
-                            config = call.rules |> Seq.choose (function ParsedRule.Http x -> Some x | _ -> None) |> Config.Http.ofInputs
-                        }
+                            config = call.rules |> Seq.choose (function ParsedRule.Http x -> Some x | _ -> None) |> Config.Http.ofInputs }
                     call.callName, callConfig ] }
     let mapped = services |> Seq.map mapService
 
@@ -178,11 +178,9 @@ type ParseResult(services: ParsedService[]) =
                 for rule in call.rules do
                     match rule with
                     | ParsedRule.Unknown jo ->
-                        yield
-                            {   serviceName = service.serviceName
-                                callName = call.callName
-                                unknownRule = jo }
+                        yield { serviceName = service.serviceName; callName = call.callName; unknownRule = jo }
                     | _ -> () ]
+
     member __.Raw : Map<string,Map<string,ParsedRule list>> = Map.ofSeq <| seq {
         for service in services ->
             service.serviceName,
@@ -196,9 +194,9 @@ type ParseResult(services: ParsedService[]) =
             | None -> fun _callConfig -> Polly.Policy.Handle<TimeoutException>()
             | Some custom -> custom
         Policy(log, createFailurePolicyBuilder, mapped)
+
     member __.UpdatePolicy(x : Policy<_>) : (string * (string * ChangeLevel) list) list =
         x.UpdateFrom mapped
 
 let parse defs : ParseResult =
-    let services = parseInternal defs
-    ParseResult(Array.ofSeq services)
+    ParseResult(parseInternal defs)
