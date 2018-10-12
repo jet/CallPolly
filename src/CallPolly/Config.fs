@@ -1,5 +1,6 @@
 ﻿module CallPolly.Config
 
+open Newtonsoft.Json
 open Newtonsoft.Json.Converters.FSharp
 open System
 
@@ -7,24 +8,43 @@ let (|TimeSpanMs|) ms = TimeSpan.FromMilliseconds(float ms)
 
 module Policy =
     module Input =
-        [<NoComparison; RequireQualifiedAccess>]
-        type BreakInput = { windowS: int; minRequests: int; failPct: float; breakS: float; dryRun: bool option }
-        [<NoComparison; RequireQualifiedAccess>]
-        type LimitInput = { maxParallel: int; maxQueue: int; dryRun: bool option }
-        [<NoComparison; RequireQualifiedAccess>]
-        type CutoffInput = { timeoutMs: int; slaMs: int option; dryRun: bool option }
 
-        [<NoComparison>]
-        [<RequireQualifiedAccess>]
+        [<NoComparison; RequireQualifiedAccess>]
+        [<JsonObject(ItemRequired=Required.Always)>]
+        type BreakInput =
+            {   windowS: int; minRequests: int; failPct: float; breakS: float
+
+                [<JsonProperty(Required=Required.DisallowNull)>]
+                dryRun: bool option }
+
+        [<NoComparison; RequireQualifiedAccess>]
+        [<JsonObject(ItemRequired=Required.Always)>]
+        type LimitInput =
+            {   maxParallel: int; maxQueue: int
+
+                [<JsonProperty(Required=Required.DisallowNull)>]
+                dryRun: bool option }
+
+        [<NoComparison; RequireQualifiedAccess>]
+        [<JsonObject(ItemRequired=Required.Always)>]
+        type CutoffInput =
+            {   timeoutMs: int
+
+                [<JsonProperty(Required=Required.DisallowNull)>]
+                slaMs: int option
+
+                [<JsonProperty(Required=Required.DisallowNull)>]
+                dryRun: bool option }
+
+        [<NoComparison; RequireQualifiedAccess>]
         type Value =
             | Break of BreakInput
             | Limit of LimitInput
             | Cutoff of CutoffInput
             | Isolate
 
-    [<NoComparison>]
-    [<RequireQualifiedAccess>]
-    [<Newtonsoft.Json.JsonConverter(typeof<UnionConverter>, "rule")>]
+    [<NoComparison; RequireQualifiedAccess>]
+    [<JsonConverter(typeof<UnionConverter>, "rule")>]
     type Rule =
         | Break of Rules.BreakerConfig
         | Limit of Rules.BulkheadConfig
@@ -63,19 +83,25 @@ module Policy =
 module Http =
     module Input =
 
-        [<Newtonsoft.Json.JsonConverter(typeof<TypeSafeEnumConverter>)>]
         [<NoComparison; RequireQualifiedAccess>]
+        [<JsonConverter(typeof<TypeSafeEnumConverter>)>]
         type LogLevel =
             | Always
             | Never
             | OnlyWhenDebugEnabled
 
         [<NoComparison; RequireQualifiedAccess>]
+        [<JsonObject(ItemRequired=Required.DisallowNull)>]
         type UriInput = { ``base``: string option; path: string option }
+
         [<NoComparison; RequireQualifiedAccess>]
+        [<JsonObject(ItemRequired=Required.Always)>]
         type SlaInput = { slaMs: int; timeoutMs: int }
+
         [<NoComparison; RequireQualifiedAccess>]
+        [<JsonObject(ItemRequired=Required.Always)>] // yes, not strictly necessary
         type LogInput = { req: LogLevel; res: LogLevel }
+
         [<NoComparison; RequireQualifiedAccess>]
         type Value =
             | Uri of UriInput
@@ -83,7 +109,7 @@ module Http =
             | Log of LogInput
 
     [<RequireQualifiedAccess>]
-    [<Newtonsoft.Json.JsonConverter(typeof<TypeSafeEnumConverter>)>]
+    [<JsonConverter(typeof<TypeSafeEnumConverter>)>]
     type LogLevel =
         | Always
         | Never
@@ -94,9 +120,8 @@ module Http =
         | Input.LogLevel.Never -> LogLevel.Never
         | Input.LogLevel.OnlyWhenDebugEnabled -> LogLevel.OnlyWhenDebugEnabled
 
-    [<NoComparison>]
-    [<RequireQualifiedAccess>]
-    [<Newtonsoft.Json.JsonConverter(typeof<UnionConverter>, "rule")>]
+    [<NoComparison; RequireQualifiedAccess>]
+    [<JsonConverter(typeof<UnionConverter>, "rule")>]
     type Rule =
         | BaseUri of Uri: Uri
         | RelUri of Uri: Uri
@@ -106,10 +131,10 @@ module Http =
     let private interpret (x: Input.Value): Rule seq = seq {
         match x with
         | Input.Value.Uri { ``base``=b; path=p } ->
-            match b with Some null | None -> () | Some b -> yield Rule.BaseUri(Uri b)
-            match p with Some null | None -> () | Some p -> yield Rule.RelUri(Uri(p, UriKind.Relative))
-        | Input.Value.Sla { slaMs=TimeSpanMs sla; timeoutMs=TimeSpanMs timeout } -> yield Rule.Sla(sla,timeout)
-        | Input.Value.Log { req=req; res=res } -> yield Rule.Log(toRuleLog req,toRuleLog res) }
+            match b with Some null | None -> () | Some b -> yield Rule.BaseUri (Uri b)
+            match p with Some null | None -> () | Some p -> yield Rule.RelUri (Uri(p, UriKind.Relative))
+        | Input.Value.Sla { slaMs=TimeSpanMs sla; timeoutMs=TimeSpanMs timeout } -> yield Rule.Sla (sla,timeout)
+        | Input.Value.Log { req=req; res=res } -> yield Rule.Log (toRuleLog req,toRuleLog res) }
 
     [<NoComparison>]
     type Configuration =
