@@ -3,6 +3,17 @@
 open Serilog
 open System
 
+module private SerilogHelpers =
+    let inline kv x y = System.Collections.Generic.KeyValuePair<_,_>(x,y)
+    let inline lo x (*lp*) = Serilog.Events.StructureValue x
+    let inline ls x (*lp seq*)= Serilog.Events.SequenceValue x
+    let inline ld x (*lv,kvp(lv)*) = Serilog.Events.DictionaryValue x
+    let inline lp n v(*:lo/lv/ls/ld*) = Serilog.Events.LogEventProperty(n, v)
+    let inline lv (x:#obj) = Serilog.Events.ScalarValue(x)
+    let forContextExplicit k v (log : ILogger) =
+        let enrich (e : Serilog.Events.LogEvent) = e.AddPropertyIfAbsent(Serilog.Events.LogEventProperty(k, v))
+        log.ForContext({ new Serilog.Core.ILogEventEnricher with member __.Enrich(evt,_) = enrich evt })
+
 module private Impl =
 
     type Warning = { service: string; call: string; ruleText: string }
@@ -11,9 +22,9 @@ module private Impl =
         let mutable current = readDefinitions ()
         let ingest () =
             let res = Parser.parse current
-            if not (List.isEmpty res.Warnings) then
-                let msgs = seq { for w in res.Warnings -> { service=w.serviceName; call=w.callName; ruleText = string w.unknownRule } }
-                log.ForContext("{count} Warnings", msgs, true).Warning("Definition had {count} unrecognized rules", List.length res.Warnings)
+            if not (Array.isEmpty res.Warnings) then
+                let msgs = seq { for w in res.Warnings -> { service=w.serviceName; call=w.callName; ruleText=string w.unknownRule } }
+                log.ForContext("warnings", msgs).Warning("Policy definitions had {count} unrecognized rules", res.Warnings.Length)
             res
         let tryReadUpdates () =
             let updated = readDefinitions()
@@ -24,20 +35,16 @@ module private Impl =
 
         ingest(),tryReadUpdates
 
-    type ServicePolicyUpdate =
-        {   service: string
-            actionUpdates: (string * CallPolly.Rules.ChangeLevel) [] }
-
-    let logChanges (log: ILogger) res =
-        let changes =
-            seq { for service, actionUpdates in res -> { service = service; actionUpdates = List.toArray actionUpdates } }
-            |> Seq.distinct
-            |> Seq.cache
-        log
-            .ForContext("dump", changes, true)
-            .Information("Updated {count} values for {@services}",
-                Seq.length changes,
-                seq { for x in changes -> x.service, Array.length x.actionUpdates });
+    open SerilogHelpers
+    let logChanges (log: ILogger) (res: (string*(string*Rules.ChangeLevel) list) list) =
+        let xs = res |> Seq.filter (function _,c -> not (List.isEmpty c)) |> Seq.sortBy (function _,c -> -List.length c) |> Seq.cache
+        if not (Seq.isEmpty xs) then
+            //.ForContext("changes", seq { for s,calls in xs do for c,change in calls -> sprintf "%s:%s:%O" s c change }, true )
+            let changesAsDictionary calls = ld (seq { for callname,change in calls -> kv (lv callname) (lv (string change) :> _) })
+            let dump = ls <| seq { for s,calls in xs -> lo [ lp "service" (lv s); lp "changes" (changesAsDictionary calls)] }
+            (log |> forContextExplicit "dump" dump).Information("Updated {count} values for {services}",
+                xs |> Seq.sumBy (function _service,changes -> changes.Length),
+                xs |> Seq.map (function service,changes -> kv service changes.Length))
 
 [<NoComparison>]
 type CallPolicyInternalState =
