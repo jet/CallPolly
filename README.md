@@ -18,7 +18,7 @@ CallPolly wraps Polly to provide:
 
 ## Non-goals
 
-- low level policy implementations should live elsewhere (see _CONTRIBUTION notes_)
+- low level policy implementations should live elsewhere (see [CONTRIBUTION notes](#contribution-notes))
 - the core CallPolly library faciltates, but should never bind _directly_ to any specific log or metrics emission sink
 
 # Dependencies
