@@ -260,17 +260,24 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         test <@ between 0.3 2. (let t = time.Elapsed in t.TotalSeconds) @>
     }
 
-    let readDefinitions () = policy
-    // Uncomment to read from, or debug using a custom policy
-    //let readDefinitions () = System.Environment.GetEnvironmentVariable "CALL_POLICY" |> System.IO.File.ReadAllText
+    let readDefinitions () =
+        let filename = System.Environment.GetEnvironmentVariable "CALL_POLICY"
+        // Uncomment as a test hack!
+        //let filename = "c:\code\CALL_POLICIES"
+        if filename <> null && System.IO.File.Exists filename then System.IO.File.ReadAllText filename
+        else policy
 
     let renderAsPrettyJson x = Parser.Newtonsoft.Serialize(x, Parser.Newtonsoft.indentSettings)
 
     let [<Fact>] ``DumpState - Pretty print internal state dump for diagnostics using existing converters``() =
         let res = Context.Create(log, readDefinitions)
-        // This should not result in any processing, but we keep it as a sanity check
+        // This should not result in any processing, but we run it as a sanity check
         // the normal use is to periodically trigger a check for new policies by running it
-        res.CheckForChanges()
+        for x in 1..1(*Int32.MaxValue*) do // Poor person's demo / REPL rig for watching what real changes get logged as
+            if x > 1 then System.Threading.Thread.Sleep 1000
+            res.CheckForChanges()
+            //let w = Parser.parse(readDefinitions()).Warnings
+            //if w.Length > 0 then log.Information("Warnings... {msgs}", w |> renderAsPrettyJson)
         res.DumpInternalState() |> renderAsPrettyJson |> output.WriteLine
 
     let [<Fact>] ``DumpWarnings - Pretty print internal state dump for diagnostics using existing converters``() =
