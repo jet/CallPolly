@@ -189,14 +189,14 @@ type CallPolicy<'TConfig when 'TConfig: equality> (makeGoverner : CallConfig<'TC
 
     /// Ingest an updated set of config values, reporting diffs, if any
     member __.TryUpdate(updated : CallConfig<'TConfig>) =
-        let changes =
+        let level =
             match updated.policy = cfg.policy, updated.config = cfg.config with
-            | true, true -> Some ChangeLevel.ConfigurationAndPolicy
+            | false, false -> Some ChangeLevel.ConfigurationAndPolicy
             | true, false -> Some ChangeLevel.Configuration
             | false, true -> Some ChangeLevel.Policy
-            | false, false -> None
+            | true, true -> None
 
-        match changes with
+        match level with
         | Some ChangeLevel.ConfigurationAndPolicy | Some ChangeLevel.Policy ->
             governor <- makeGoverner updated
             cfg <- updated
@@ -204,7 +204,7 @@ type CallPolicy<'TConfig when 'TConfig: equality> (makeGoverner : CallConfig<'TC
             cfg <- updated
         | _ -> ()
 
-        changes
+        level
 
     member __.Policy = cfg.policy
     member __.Config = cfg.config

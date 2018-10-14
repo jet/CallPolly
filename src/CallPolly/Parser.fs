@@ -173,13 +173,13 @@ type ParseResult(services: ParsedService[]) =
     let mapped = services |> Seq.map mapService
 
     member __.Warnings =
-        [ for service in services do
+        [| for service in services do
             for call in service.calls do
                 for rule in call.rules do
                     match rule with
                     | ParsedRule.Unknown jo ->
                         yield { serviceName = service.serviceName; callName = call.callName; unknownRule = jo }
-                    | _ -> () ]
+                    | _ -> () |]
 
     member __.Raw : Map<string,Map<string,ParsedRule list>> = Map.ofSeq <| seq {
         for service in services ->
