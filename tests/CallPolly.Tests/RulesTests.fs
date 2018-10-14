@@ -224,9 +224,7 @@ module SerilogExtractors =
         | x -> Other (dumpEvent x)
     type SerilogHelpers.LogCaptureBuffer with
         member buffer.Take() =
-            let actual = [for x in buffer.Entries -> classify x]
-            buffer.Clear()
-            actual
+            [ for x in buffer.TakeBatch() -> classify x ]
 
 type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output

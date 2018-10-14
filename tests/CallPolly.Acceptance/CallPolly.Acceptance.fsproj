@@ -8,6 +8,10 @@
     <DisableImplicitSystemValueTupleReference>true</DisableImplicitSystemValueTupleReference>
   </PropertyGroup>
 
+  <PropertyGroup Condition=" '$(TargetFramework)' == 'net461' ">
+    <DefineConstants>NET461</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <Compile Include="..\CallPolly.Tests\Infrastructure.fs" Link="Infrastructure.fs" />
     <Compile Include="Scenarios.fs" />

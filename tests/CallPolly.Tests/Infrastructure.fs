@@ -71,6 +71,7 @@ module Choice =
 module SerilogHelpers =
     open Serilog
     open Serilog.Events
+    open System.Collections.Concurrent
 
     /// Create a logger, targeting the specified outputs
     [<NoComparison>]
@@ -96,12 +97,22 @@ module SerilogHelpers =
         interface Serilog.Core.ILogEventSink with member __.Emit logEvent = writeSerilogEvent logEvent
 
     type LogCaptureBuffer() =
-        let captured = ResizeArray()
+        let mutable captured = ConcurrentQueue()
         let capture (logEvent: LogEvent) =
-            captured.Add logEvent
+            captured.Enqueue logEvent
         interface Serilog.Core.ILogEventSink with member __.Emit logEvent = capture logEvent
-        member __.Clear () = captured.Clear()
+        member __.Clear() =
+#if NET461
+            captured <- ConcurrentQueue()
+#else
+            captured.Clear()
+#endif
+
         member __.Entries = captured.ToArray()
+        member __.TakeBatch() =
+            let actual = __.Entries
+            __.Clear()
+            actual
 
     let (|SerilogScalar|_|) : Serilog.Events.LogEventPropertyValue -> obj option = function
         | (:? ScalarValue as x) -> Some x.Value

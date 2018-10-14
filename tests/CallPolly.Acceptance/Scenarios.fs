@@ -15,11 +15,9 @@ module Helpers =
     let s x = TimeSpan.FromSeconds (float x)
     let between min max (value : float) = value >= min && value <= max
 
-type SerilogHelpers.LogCaptureBuffer with
-    member buffer.Take() =
-        let actual = [for x in buffer.Entries -> x.RenderMessage()]
-        buffer.Clear()
-        actual
+    type SerilogHelpers.LogCaptureBuffer with
+        member buffer.Take() =
+            [ for x in buffer.TakeBatch() -> x.RenderMessage() ]
 
 let policy = """{
     "services": {
