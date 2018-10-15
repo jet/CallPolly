@@ -36,7 +36,9 @@ type Governor(log: Serilog.ILogger, buildFailurePolicy: unit -> Polly.PolicyBuil
         // In the general case, it's always possible to write an async expression that honors cancellation
         // If anyone tries to insist on using Pessimistic mode, this should instead by accomplished by explicitly having
         // the inner computation cut the orphan work adrift in the place where the code requires such questionable semantics
-        | Some cutoff when not cutoff.dryRun -> Some <| Policy.TimeoutAsync(cutoff.timeout)
+        | Some cutoff when not cutoff.dryRun ->
+            log.Debug("Establishing TimeoutAsync for {service:l}-{call:l}: {timeout}", serviceName, callName, cutoff.timeout)
+            Some <| Policy.TimeoutAsync(cutoff.timeout)
         | _ -> None
     let logQueuing() = log |> Events.Log.queuing (serviceName, callName)
     let logDeferral interval concurrencyLimit = log |> Events.Log.deferral (serviceName, callName, policyName) interval concurrencyLimit
@@ -49,6 +51,7 @@ type Governor(log: Serilog.ILogger, buildFailurePolicy: unit -> Polly.PolicyBuil
         | Some limit ->
             let logRejection (_: Context) : Task = logShedding { dop = limit.dop; queue = limit.queue } ; Task.CompletedTask
             let effectiveLimit = if limit.dryRun then Int32.MaxValue else limit.dop // https://github.com/App-vNext/Polly/issues/496#issuecomment-420183946
+            log.Debug("Establishing BulkheadAsync for {service:l}-{call:l} {effectiveLimit}+{queue}", serviceName, callName, effectiveLimit, limit.queue)
             Some <| Policy.BulkheadAsync(maxParallelization = effectiveLimit, maxQueuingActions = limit.queue, onBulkheadRejectedAsync = logRejection)
     let logBreaking (exn : exn) (timespan: TimeSpan) =
         match config with
@@ -71,6 +74,7 @@ type Governor(log: Serilog.ILogger, buildFailurePolicy: unit -> Polly.PolicyBuil
         | None ->
             None
         | Some bc ->
+            log.Debug("Establishing AdvancedCircuitBreakerAsync for {service:l}-{call:l}", serviceName, callName)
             buildFailurePolicy()
                 .AdvancedCircuitBreakerAsync(
                     failureThreshold = bc.errorRateThreshold,
@@ -121,7 +125,9 @@ type Governor(log: Serilog.ILogger, buildFailurePolicy: unit -> Polly.PolicyBuil
     /// Execute and/or log failures regarding invocation of a function with the relevant policy applied
     member __.Execute(inner : Async<'a>) : Async<'a> =
         match asyncPolicy with
-        | None -> inner
+        | None ->
+            log.Debug("Policy Execute Raw {service:l}-{call:l}", serviceName, callName)
+            inner
         | Some polly -> async {
             let mutable wasFull = false
             // NB This logging is on a best-effort basis - obviously the guard here has an implied race condition
@@ -161,6 +167,7 @@ type Governor(log: Serilog.ILogger, buildFailurePolicy: unit -> Polly.PolicyBuil
                 Async.StartAsTask(inner, cancellationToken=pollyCt)
             let execute = async {
                 let! ct = Async.CancellationToken // Grab async cancellation token of this `Execute` call, so cancellation gets propagated into the Polly [wrap]
+                log.Debug("Policy Execute Inner {service:l}-{call:l}", serviceName, callName)
                 try return! polly.ExecuteAsync(startInnerTask, ct) |> Async.AwaitTaskCorrect
                 // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated/Broken
                 with LogWhenRejectedFilter jitProcessingInterval -> return! invalidOp "not possible; Filter always returns None" }
@@ -172,9 +179,11 @@ type Governor(log: Serilog.ILogger, buildFailurePolicy: unit -> Polly.PolicyBuil
                 finally
                     if not jitProcessingInterval.IsValueCreated then
                         let processingInterval = jitProcessingInterval.Force()
-                        match sla, processingInterval.Elapsed with
-                        | _, elapsed when elapsed > timeout && dryRun -> logTimeout config processingInterval
-                        | Some sla, elapsed when elapsed > sla -> logBreach sla processingInterval
+                        let elapsed = processingInterval.Elapsed
+                        log.Debug("Policy Executed in {elapsedMs} {service:l}-{call:l}", elapsed.TotalMilliseconds, serviceName, callName)
+                        match sla with
+                        | _ when elapsed > timeout && dryRun -> logTimeout config processingInterval
+                        | Some sla when elapsed > sla -> logBreach sla processingInterval
                         | _ -> () }
 
     /// Diagnostic state
