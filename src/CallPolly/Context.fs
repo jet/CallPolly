@@ -46,10 +46,14 @@ module private Impl =
                 xs |> Seq.sumBy (function _service,changes -> changes.Length),
                 xs |> Seq.map (function service,changes -> kv service changes.Length))
 
-[<NoComparison>]
-type CallPolicyInternalState =
-    {   service: string; action: string; baseUri: Uri option
-        config: Rules.CallConfig<Config.Http.Configuration>; state: Rules.GovernorState }
+module Internal =
+    /// NB aside from the naming of the top level fields within this record, it's important to note that this structure is subject to breaking changes
+    // and should only be used for the purposes of diagnostic dumps
+    // if there is a programmatic diagnostic you need, it should be requested and designed via an Issue
+    [<NoComparison>]
+    type CallPolicyInternalState =
+        {   service: string; action: string; baseUri: Uri option
+            config: Rules.CallConfig<Config.Http.Configuration>; state: Rules.GovernorState }
 
 type Context private (inner : Rules.Policy<_>, logChanges, tryReadUpdates) =
     static member Create(log,readDefinitions,?createFailurePolicyBuilder) =
@@ -66,7 +70,7 @@ type Context private (inner : Rules.Policy<_>, logChanges, tryReadUpdates) =
             let changes = parsed.UpdatePolicy(inner)
             logChanges changes
 
-    member __.DumpInternalState() = seq {
+    member __.DumpInternalState(): Internal.CallPolicyInternalState seq = seq {
         for service, calls in inner.InternalState do
             for action, (cfg, state) in calls do
                 yield { service=service; action=action; baseUri=cfg.config.EffectiveUri; config=cfg; state=state } }

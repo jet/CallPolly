@@ -15,7 +15,11 @@ module private Option =
 type BreakerConfig = { window: TimeSpan; minThroughput: int; errorRateThreshold: float; retryAfter: TimeSpan; dryRun: bool }
 type BulkheadConfig = { dop: int; queue: int; dryRun: bool }
 type CutoffConfig = { timeout: TimeSpan; sla: TimeSpan option; dryRun: bool }
-type PolicyConfig = { isolate: bool; cutoff: CutoffConfig option; limit: BulkheadConfig option; breaker: BreakerConfig option }
+type PolicyConfig =
+    {   // Prettify DumpState diagnostic output - this structure is not roundtripped but isolated circuits stand out better when rare
+        [<Newtonsoft.Json.JsonProperty(DefaultValueHandling=Newtonsoft.Json.DefaultValueHandling.Ignore)>]
+        isolate: bool
+        cutoff: CutoffConfig option; limit: BulkheadConfig option; breaker: BreakerConfig option }
 
 type GovernorState = { circuitState : string option; bulkheadAvailable : int option; queueAvailable : int option }
 
