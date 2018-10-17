@@ -98,6 +98,7 @@ type Act =
 type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
 
     let run serviceName callName f = policy.Find(serviceName, callName).Execute(f)
+    let runLog callLog serviceName callName f = policy.Find(serviceName, callName).Execute(f, callLog)
 
     let _upstreamA1 (a : Act) = async {
         log.Information("A1")
@@ -132,6 +133,7 @@ type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
     let _apiBroken = upstreamA3 Succeed
     member __.ApiManualBroken = _apiBroken
     member __.ApiOneSecondSla a1 a2 = run "ingres" "api-a" <| _apiA a1 a2
+    member __.ApiOneSecondSlaLog callLog a1 a2 = runLog callLog "ingres" "api-a" <| _apiA a1 a2
     member __.ApiTenSecondSla b1 = run "ingres" "api-b" <| _apiB b1
 
 let (|Http200|Http500|Http502|Http503|Http504|) : Choice<int,exn> -> _ = function
@@ -148,7 +150,7 @@ let (|Status|) : Choice<int,exn> -> int = function
     | Http503 -> 503
     | Http504 -> 504
 
-/// Acceptance tests illustrating the indended use of CallPolly wrt implementing flow control within an orchestration layer
+/// Acceptance tests illustrating the intended use of CallPolly wrt implementing flow control within an orchestration layer
 type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output
 
@@ -156,8 +158,20 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
         let! time, (Status res) = sut.ApiOneSecondSla Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
+        let entries = buffer.Take()
+        test <@ res = 503
+                && between 1. 2. (let t = time.Elapsed in t.TotalSeconds)
+                && between 4. 5. (float entries.Length) @> } // 1 api call, 2 call log entries, 1 cutoff event, maybe 1 delayed event
+
+    let [<Fact>] ``CallLog - Can capture call-specific log entries isolated from overall log`` () = async {
+        let callLog, callBuffer = LogHooks.createLoggerWithCapture output
+        let policy = Parser.parse(policy).CreatePolicy log
+        let sut = Sut(log, policy)
+        let! time, (Status res) = sut.ApiOneSecondSlaLog callLog Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
         test <@ res = 503 && between 1. 2. (let t = time.Elapsed in t.TotalSeconds) @>
-    }
+        let callEntries, statEntries = callBuffer.Take(), buffer.Take()
+        test <@ between 1. 2. (float callEntries.Length) // 1 cutoff event, maybe 1 delayed event
+                && 3 = statEntries.Length @> } // 1 api call, 2 call log entries
 
     let [<Fact>] ``Trapping - Arbitrary Polly expressions can be used to define a failure condition`` () = async {
         let selectPolicy (cfg: CallPolly.Rules.CallConfig<Config.Http.Configuration>) =
