@@ -119,3 +119,34 @@ type ConfigParsing(output : Xunit.Abstractions.ITestOutputHelper) =
         let res = Parser.parse(defs).CreatePolicy log
         let effectiveUri = trap <@ res.TryFind("svc","call").Value.Config.EffectiveUri |> Option.get @>
         test <@ "https://base/api/call" = string effectiveUri @>
+
+    let [<Fact>] ``Base Uris with leading and trailing slashes don't yield double-slashed URIs`` () : unit =
+        let defs = """{ "services": { "svc": {
+            "calls": { "call": "default" },
+            "defaultPolicy": null,
+            "policies": {
+                "default" : [
+                    { "rule": "Uri", "base": "https://base/", "path": "/call" }
+                ]
+            }
+}}}"""
+
+        let res = Parser.parse(defs).CreatePolicy log
+        let effectiveUri = trap <@ res.TryFind("svc","call").Value.Config.EffectiveUri |> Option.get @>
+        test <@ "https://base/call" = string effectiveUri @>
+
+
+    let [<Fact>] ``Paths with leading slashes override base paths in a base Uri`` () : unit =
+        let defs = """{ "services": { "svc": {
+            "calls": { "call": "default" },
+            "defaultPolicy": null,
+            "policies": {
+                "default" : [
+                    { "rule": "Uri", "base": "https://base/api/", "path": "/call" }
+                ]
+            }
+}}}"""
+
+        let res = Parser.parse(defs).CreatePolicy log
+        let effectiveUri = trap <@ res.TryFind("svc","call").Value.Config.EffectiveUri |> Option.get @>
+        test <@ "https://base/call" = string effectiveUri @>

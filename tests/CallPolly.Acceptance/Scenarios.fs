@@ -81,7 +81,6 @@ type Act =
     | BadGateway
     | DelayMs of ms:int
     | DelayS of s:int
-    | Composite of Act list
     member this.Execute() = async {
         match this with
         | Succeed ->        return 42
@@ -90,9 +89,6 @@ type Act =
         | DelayMs x ->      do! Async.Sleep(ms x)
                             return 43
         | DelayS x ->       do! Async.Sleep(s x)
-                            return 43
-        | Composite xs ->   for x in xs do
-                                do! x.Execute() |> Async.Ignore
                             return 43 }
 
 type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
@@ -115,26 +111,31 @@ type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
         return! a.Execute() }
     let upstreamA3 a = run "upstreamA" "CallBroken" <| _upstreamA3 a
 
-    let _upstreamB1 (a : Act) = async {
-        log.Information("B1")
-        return! a.Execute() }
-    let upstreamB1 a = run "upstreamB" "Call1" <| _upstreamB1 a
-
     let _apiA a1 a2 = async {
         log.Information "ApiA"
         let! a = upstreamA1 a1
         let! b = upstreamA2 a2
         return a + b
     }
-    let _apiB b1 = async {
+
+    let _apiABroken = upstreamA3 Succeed
+
+    let _upstreamB1 (a : Act) = async {
+        log.Information("B1")
+        return! a.Execute() }
+    let upstreamB1 a = run "upstreamB" "Call1" <| _upstreamB1 a
+
+    let _apiB (a : Act) = async {
         log.Information "ApiB"
-        return! upstreamB1 b1
+        return! upstreamB1 a
     }
-    let _apiBroken = upstreamA3 Succeed
-    member __.ApiManualBroken = _apiBroken
+
     member __.ApiOneSecondSla a1 a2 = run "ingres" "api-a" <| _apiA a1 a2
     member __.ApiOneSecondSlaLog callLog a1 a2 = runLog callLog "ingres" "api-a" <| _apiA a1 a2
+
     member __.ApiTenSecondSla b1 = run "ingres" "api-b" <| _apiB b1
+
+    member __.ApiManualBroken = _apiABroken
 
 let (|Http200|Http500|Http502|Http503|Http504|) : Choice<int,exn> -> _ = function
     | Choice1Of2 _ -> Http200
@@ -271,7 +272,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let! time, res = List.init 1000 alternateBetweenTwoUpstreams |> Async.Parallel |> Stopwatch.Time
         let counts = res |> Seq.countBy (function Status s -> s) |> Seq.sortBy fst |> List.ofSeq
         test <@ match counts with [200,successCount; 503,rejectCount] -> successCount < 100 && rejectCount > 800 | x -> failwithf "%A" x @>
-        test <@ between 0.3 2. (let t = time.Elapsed in t.TotalSeconds) @>
+        test <@ between 0.3 2.5 (let t = time.Elapsed in t.TotalSeconds) @>
     }
 
     let readDefinitions () =
