@@ -257,7 +257,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let! time, res = List.init 1000 alternateBetweenTwoUpstreams |> Async.Parallel |> Stopwatch.Time
         let counts = res |> Seq.countBy (function Status s -> s) |> Seq.sortBy fst |> List.ofSeq
         test <@ match counts with [200,successCount; 503,rejectCount] -> successCount < 100 && rejectCount > 800 | x -> failwithf "%A" x @>
-        test <@ between 0.3 2. (let t = time.Elapsed in t.TotalSeconds) @>
+        test <@ between 0.3 2.5 (let t = time.Elapsed in t.TotalSeconds) @>
     }
 
     let readDefinitions () =
