@@ -23,6 +23,12 @@ type PolicyConfig =
 
 type GovernorState = { circuitState : string option; bulkheadAvailable : int option; queueAvailable : int option }
 
+[<NoComparison; NoEquality>]
+[<RequireQualifiedAccess>]
+type TaskOrAsync<'T> =
+    | Task of (CancellationToken -> Task<'T>)
+    | Async of (Async<'T>)
+
 /// Translates a PolicyConfig's rules to a Polly IAsyncPolicy instance that gets held in the ActionPolicy
 type Governor(log: Serilog.ILogger, buildFailurePolicy: unit -> Polly.PolicyBuilder, serviceName: string, callName: string, policyName: string, config: PolicyConfig) =
     let logBreach sla interval = log |> Events.Log.cutoffSlaBreached (serviceName, callName, policyName) sla interval
@@ -123,11 +129,15 @@ type Governor(log: Serilog.ILogger, buildFailurePolicy: unit -> Polly.PolicyBuil
             Some () // Compiler gets too clever if we never return Some
 
     /// Execute and/or log failures regarding invocation of a function with the relevant policy applied
-    member __.Execute(inner : Async<'a>) : Async<'a> =
+    member __.Execute(inner: TaskOrAsync<'a>) : Async<'a> =
         match asyncPolicy with
         | None ->
             log.Debug("Policy Execute Raw {service:l}-{call:l}", serviceName, callName)
-            inner
+            match inner with
+            | TaskOrAsync.Async a -> a
+            | TaskOrAsync.Task factory -> async {
+                let! ct = Async.CancellationToken
+                return!  factory ct |> Async.AwaitTaskCorrect }
         | Some polly -> async {
             let mutable wasFull = false
             // NB This logging is on a best-effort basis - obviously the guard here has an implied race condition
@@ -164,7 +174,10 @@ type Governor(log: Serilog.ILogger, buildFailurePolicy: unit -> Polly.PolicyBuil
 
                 // sic - cancellation of the inner computation needs to be controlled by Polly's chain of handlers
                 // for example, if a cutoff is configured, it's Polly that will be requesting the cancellation
-                Async.StartAsTask(inner, cancellationToken=pollyCt)
+                match inner with
+                | TaskOrAsync.Async a -> Async.StartAsTask(a, cancellationToken=pollyCt)
+                | TaskOrAsync.Task factory -> factory pollyCt
+
             let execute = async {
                 let! ct = Async.CancellationToken // Grab async cancellation token of this `Execute` call, so cancellation gets propagated into the Polly [wrap]
                 log.Debug("Policy Execute Inner {service:l}-{call:l}", serviceName, callName)
@@ -222,9 +235,13 @@ type CallPolicy<'TConfig when 'TConfig: equality> (makeGoverner : CallConfig<'TC
     member __.Policy = cfg.policy
     member __.Config = cfg.config
 
-    /// Execute the call, apply the policy rules
+    /// Execute an inner Async computation, applying the policy rules
     member __.Execute(inner : Async<'t>) =
-        governor.Execute inner
+        governor.Execute (TaskOrAsync.Async inner)
+
+    /// Execute an inner Task-Method, applying the policy rules
+    member __.ExecuteTask<'T>(inner : CancellationToken -> Task<'T>) =
+        governor.Execute (TaskOrAsync.Task inner)
 
     /// Facilitates dumping for diagnostics
     member __.InternalState =
