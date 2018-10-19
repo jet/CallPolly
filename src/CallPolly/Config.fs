@@ -27,6 +27,11 @@ module Policy =
 
         [<NoComparison; RequireQualifiedAccess>]
         [<JsonObject(ItemRequired=Required.Always)>]
+        type LimitByInput =
+            {   tag: string; maxParallel: int; maxQueue: int }
+
+        [<NoComparison; RequireQualifiedAccess>]
+        [<JsonObject(ItemRequired=Required.Always)>]
         type CutoffInput =
             {   timeoutMs: int
 
@@ -40,6 +45,7 @@ module Policy =
         type Value =
             | Break of BreakInput
             | Limit of LimitInput
+            | LimitBy of LimitByInput
             | Cutoff of CutoffInput
             | Isolate
 
@@ -48,6 +54,7 @@ module Policy =
     type Rule =
         | Break of Rules.BreakerConfig
         | Limit of Rules.BulkheadConfig
+        | LimitBy of Rules.TaggedBulkheadConfig
         | Cutoff of Rules.CutoffConfig
         | Isolate
 
@@ -65,6 +72,11 @@ module Policy =
                 dop = x.maxParallel
                 queue = x.maxQueue
                 dryRun = defaultArg x.dryRun false }
+        | Input.Value.LimitBy x ->
+            Rule.LimitBy {
+                dop = x.maxParallel
+                queue = x.maxQueue
+                tag = x.tag }
         | Input.Value.Cutoff ({ timeoutMs=TimeSpanMs timeout } as x) ->
             Rule.Cutoff {
                 timeout = timeout
@@ -76,8 +88,9 @@ module Policy =
             | Rule.Isolate -> { s with isolate = true }
             | Rule.Break breakerConfig -> { s with breaker = Some breakerConfig }
             | Rule.Limit bulkheadConfig -> { s with limit = Some bulkheadConfig }
+            | Rule.LimitBy taggedBulkheadConfig -> { s with taggedLimits = s.taggedLimits @ [taggedBulkheadConfig] }
             | Rule.Cutoff cutoffConfig -> { s with cutoff = Some cutoffConfig }
-        Seq.fold folder { isolate = false; cutoff = None; limit = None; breaker = None }
+        Seq.fold folder { isolate = false; cutoff = None; limit = None; taggedLimits = []; breaker = None }
     let ofInputs xs = xs |> Seq.map interpret |> fold
 
 module Http =

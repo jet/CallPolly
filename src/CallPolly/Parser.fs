@@ -65,6 +65,7 @@ and [<NoComparison>]
     | Isolate
     | Break of Config.Policy.Input.BreakInput
     | Limit of Config.Policy.Input.LimitInput
+    | LimitBy of Config.Policy.Input.LimitByInput
     | Cutoff of Config.Policy.Input.CutoffInput
 
     (* Config.Http.Input.Value *)
@@ -117,6 +118,7 @@ let parseInternal defsJson : ParsedService [] =
             | Input.Isolate -> yield ParsedRule.Policy Config.Policy.Input.Value.Isolate
             | Input.Break x -> yield ParsedRule.Policy (Config.Policy.Input.Value.Break x)
             | Input.Limit x -> yield ParsedRule.Policy (Config.Policy.Input.Value.Limit x)
+            | Input.LimitBy x -> yield ParsedRule.Policy (Config.Policy.Input.Value.LimitBy x)
             | Input.Cutoff x -> yield ParsedRule.Policy (Config.Policy.Input.Value.Cutoff x)
 
             | Input.Unknown x -> yield ParsedRule.Unknown x
