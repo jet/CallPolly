@@ -7,11 +7,12 @@
     <IsTestProject>false</IsTestProject>
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
     <DisableImplicitSystemValueTupleReference>true</DisableImplicitSystemValueTupleReference>
-    <VersionPrefix>0.0.5</VersionPrefix>
+    <VersionPrefix>0.0.6</VersionPrefix>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="Infrastructure.fs" />
+    <Compile Include="BulkheadMulti.fs" />
     <Compile Include="Events.fs" />
     <Compile Include="Rules.fs" />
     <Compile Include="Config.fs" />

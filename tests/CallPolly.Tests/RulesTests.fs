@@ -45,6 +45,9 @@ module Core =
             "limit": [
                 { "rule": "Limit",  "maxParallel": 2, "maxQueue": 3, "dryRun": true }
             ],
+            "limitBy": [
+                { "rule": "LimitBy","maxParallel": 3, "maxQueue": 2, "tag": "clientIp", "dryRun": true }
+            ],
             "break": [
                 { "rule": "Break",  "windowS": 5, "minRequests": 100, "failPct": 20, "breakS": 1 }
             ],
@@ -57,6 +60,7 @@ module Core =
             "heavy": [
                 { "rule": "Include","policy": "defaultLog" },
                 { "rule": "Include","policy": "limit" },
+                { "rule": "Include","policy": "limitBy" },
                 { "rule": "Include","policy": "break" },
                 { "rule": "Include","policy": "cutoff" },
                 { "rule": "Sla",    "slaMs": 5000, "timeoutMs": 10000 },
@@ -72,15 +76,15 @@ module Core =
 
     let limitParsed = mkPolicy <| Config.Policy.Input.Value.Limit { maxParallel=2; maxQueue=3; dryRun=Some true }
     let limitConfig : Rules.BulkheadConfig = { dop=2; queue=3; dryRun=true }
-    let limitPolicy = Config.Policy.Rule.Limit limitConfig
+
+    let limitByParsed = mkPolicy <| Config.Policy.Input.Value.LimitBy { tag="clientIp"; maxParallel=3; maxQueue=2 }
+    let limitByConfig : Rules.TaggedBulkheadConfig = { tag="clientIp"; dop=3; queue=2  }
 
     let breakParsed = mkPolicy <| Config.Policy.Input.Value.Break { windowS = 5; minRequests = 100; failPct=20.; breakS = 1.; dryRun = None }
     let breakConfig : Rules.BreakerConfig = { window = s 5; minThroughput = 100; errorRateThreshold = 0.2; retryAfter = s 1; dryRun = false }
-    let breakPolicy = Config.Policy.Rule.Break breakConfig
 
     let cutoffParsed = mkPolicy <| Config.Policy.Input.Value.Cutoff { timeoutMs = 500; slaMs = None; dryRun = Some true }
     let cutoffConfig : Rules.CutoffConfig = { timeout = ms 500; sla = None; dryRun = true }
-    let cutoffPolicy = Config.Policy.Rule.Cutoff cutoffConfig
 
     let isolateParsed = mkPolicy <| Config.Policy.Input.Value.Isolate
 
@@ -93,12 +97,12 @@ module Core =
         {   timeout = Some (s 5); sla = Some (s 1)
             ``base`` = Some baseUri; rel = None
             reqLog = Config.Http.LogLevel.OnlyWhenDebugEnabled; resLog = Config.Http.LogLevel.OnlyWhenDebugEnabled }
-    let noPolicy = { isolate = false; cutoff = None; limit = None; breaker = None; }
+    let noPolicy = { isolate = false; cutoff = None; limit = None; taggedLimits = []; breaker = None; }
     let heavyConfig : Config.Http.Configuration =
         {   timeout = Some (s 10); sla = Some (s 5)
             ``base`` = None; rel = None
             reqLog = Config.Http.LogLevel.OnlyWhenDebugEnabled; resLog = Config.Http.LogLevel.OnlyWhenDebugEnabled }
-    let heavyRules = { isolate = true; cutoff = Some cutoffConfig; limit = Some limitConfig; breaker = Some breakConfig }
+    let heavyRules = { isolate = true; cutoff = Some cutoffConfig; limit = Some limitConfig; taggedLimits = [limitByConfig]; breaker = Some breakConfig }
     let mkParsedSla sla timeout = Parser.ParsedRule.Http (Config.Http.Input.Value.Sla {slaMs = sla; timeoutMs = timeout })
 
     /// Base tests exercising core functionality
@@ -117,7 +121,7 @@ module Core =
                     && noPolicy = edd.Policy @>
             let poRaw = findRaw "placeOrder"
             let po = trap <@ tryFindActionRules "placeOrder" |> Option.get @>
-            test <@ [logParsed; limitParsed; breakParsed; cutoffParsed; mkParsedSla 5000 10000; isolateParsed] = poRaw
+            test <@ [logParsed; limitParsed; limitByParsed; breakParsed; cutoffParsed; mkParsedSla 5000 10000; isolateParsed] = poRaw
                     && heavyConfig = po.Config
                     && heavyRules = po.Policy @>
             test <@ None = tryFindActionRules "missing" @>
@@ -130,7 +134,7 @@ module Core =
             let default_ = findRaw "(default)"
             test <@ baseParsed :: default_ = findRaw "EstimatedDeliveryDates" @>
             test <@ [isolateParsed] = findRaw "EstimatedDeliveryDate" @>
-            test <@ defaultLog @ [limitParsed; breakParsed; cutoffParsed; mkParsedSla 5000 10000; isolateParsed] = findRaw "placeOrder" @>
+            test <@ defaultLog @ [limitParsed; limitByParsed; breakParsed; cutoffParsed; mkParsedSla 5000 10000; isolateParsed] = findRaw "placeOrder" @>
             let heavyPolicy = pol.Find("default","placeOrder")
             test <@ heavyPolicy.Policy.isolate
                     && Some breakConfig = heavyPolicy.Policy.breaker @>
@@ -165,8 +169,8 @@ module SerilogExtractors =
     type LogEvent =
         | Isolated of service: string * call: string * policy: string
         | Broken of service: string * call: string * policy: string
-        | Deferred of service: string * call: string * policy: string * duration: TimeSpan
-        | Shed of service: string * call: string * policy: string
+        | Deferred of service: string * call: string * policy: string * tags: (string*string) list * duration: TimeSpan
+        | Shed of service: string * call: string * policy: string * tags: (string*string) list
         | Breached of service: string * call: string * duration: TimeSpan
         | Canceled of service: string * call: string * duration: TimeSpan
         | Status of string * StatusEvent
@@ -192,18 +196,20 @@ module SerilogExtractors =
         | TemplateContains "Bulkhead Queuing likely for " & HasProp "call" (SerilogString an) -> Call(an, MaybeQueuing)
         | TemplateContains "Bulkhead DRYRUN Queuing " & HasProp "call" (SerilogString an) -> Call(an, QueuingDryRun)
         | TemplateContains "Bulkhead DRYRUN Shedding " & HasProp "call" (SerilogString an) -> Call(an, SheddingDryRun)
-        | CallPollyEvent (Events.Event.Deferred (_service,eCall,eInterval))
+        | CallPollyEvent (Events.Event.Deferred (_service,eCall,_tags,eInterval))
             & HasProp "service" (SerilogString service)
             & HasProp "call" (SerilogString call)
             & HasProp "policy" (SerilogString policy)
+            & MaybeMap "tags" maybeTags
             when eCall = call ->
-                Deferred (service,call,policy, eInterval.Elapsed)
-        | CallPollyEvent (Events.Event.Shed (_service,eCall,_config))
+                Deferred (service,call,policy,maybeTags, eInterval.Elapsed)
+        | CallPollyEvent (Events.Event.Shed (_service,eCall,_tags,_config))
             & HasProp "service" (SerilogString service)
             & HasProp "call" (SerilogString call)
             & HasProp "policy" (SerilogString policy)
+            & MaybeMap "tags" maybeTags
             when eCall = call ->
-                Shed (service,call,policy)
+                Shed (service,call,policy,maybeTags)
         | CallPollyEvent (Events.Event.Breached (_service,eCall,_sla,interval))
             & HasProp "service" (SerilogString service)
             & HasProp "call" (SerilogString call)
@@ -412,14 +418,14 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
             |> Seq.mapi (fun i f -> async {
                 // Stagger the starts - the dryRun mode does not force any waiting so wait before we ask for the start so we
                 // get it into a state where at least 1 start shows queuing would normally take place
-                do! Async.Sleep(ms (10 * i))
+                do! Async.Sleep(ms (200 * i))
                 // Catch inside so the first throw doesnt cancel the overall execution
                 return! ap.Execute f |> Async.Catch })
             |> Async.Parallel
             |> Stopwatch.Time
         let oks, errs = Choice.partition results
         test <@ 3 = Array.length oks
-                && time.Elapsed < s 4 // 1000ms*2+5*10+ 1000ms fudge factor
+                && time.Elapsed < s 4 // 1000ms*2+5*200+ 1000ms fudge factor
                 && 3 = Array.length errs
                 && errs |> Seq.forall (fun x -> x.GetType() = typedefof<TimeoutException>) @>
         let evnts = buffer.Take()
@@ -449,8 +455,8 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
         let evnts = buffer.Take()
         let queuedOrShed = function
             | Call ("(default)",MaybeQueuing) as x -> Choice1Of3 x
-            | Deferred ("default","(default)","def",delay) as x -> Choice2Of3 delay
-            | Shed ("default","(default)","def") as x -> Choice3Of3 x
+            | Deferred ("default","(default)","def",[], delay) as x -> Choice2Of3 delay
+            | Shed ("default","(default)","def",[]) as x -> Choice3Of3 x
             | x -> failwithf "Unexpected event %A" x
         let queued,waited,shed = evnts |> Seq.map queuedOrShed |> Choice.partition3
         let delayed = waited |> Array.filter (fun x -> x > ms 500)
@@ -458,6 +464,123 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
         test <@ 4 >= Array.length queued
                 && between 2 3 (Array.length delayed) // Typically, 3 should get delayed, but depending on scheduling, only 2 get logged as such, and we don't want a flickering test
                 && 1 = Array.length shed @> }
+
+type LimitBy(output : Xunit.Abstractions.ITestOutputHelper) =
+    let log, buffer = LogHooks.createLoggerWithCapture output
+
+    let limitByOnly = """{ "services": { "default": {
+        "calls": {},
+        "defaultPolicy": "def",
+        "policies": {
+            "def": [
+                { "rule": "LimitBy", "maxParallel": 2, "maxQueue": 3, "tag": "clientIp" },
+                { "rule": "LimitBy", "maxParallel": 2, "maxQueue": 3, "tag": "clientDomain" }
+            ]
+        }
+}}}"""
+    let expectedRule : Rules.TaggedBulkheadConfig = { dop = 2; queue = 3; tag="clientIp" }
+    let expectedDomainRule : Rules.TaggedBulkheadConfig = { dop = 2; queue = 3; tag="clientDomain" }
+
+    let runOk = async {
+        do! Async.Sleep (s 1)
+        return 42 }
+
+    let [<Fact>] ``Enforces queueing and sheds load above limit whenever there is contention on a tag`` () = async {
+        let pol = Parser.parse(limitByOnly).CreatePolicy log
+        let ap = pol.Find("default","any")
+        test <@ [expectedRule; expectedDomainRule] = ap.Policy.taggedLimits @>
+        let contending =
+            let alternateDomainVsIpContention i =
+                match i % 2 with
+                | 0 -> ["clientIp","A"]
+                | _ -> ["clientIp",string i; "clientDomain","B"]
+            Seq.replicate 12 runOk
+            |> Seq.zip (Seq.init 12 alternateDomainVsIpContention)
+        let notContending =
+            let alternateUnderRadar i =
+                match i % 3 with
+                | 0 -> "C"
+                | 1 -> "D"
+                | _ -> "E"
+            Seq.replicate 12 runOk
+            |> Seq.zip (Seq.init 12 alternateUnderRadar |> Seq.map (fun k -> ["clientIp",k]))
+        let mkTags tags =
+            tags |> dict |> System.Collections.ObjectModel.ReadOnlyDictionary
+        let! time, results =
+            Seq.append notContending contending
+            // Catch inside so the first throw doesnt cancel the overall execution
+            |> Seq.map(fun (tags, op) -> ap.Execute(op, tags=mkTags tags) |> Async.Catch)
+            |> Async.Parallel
+            |> Stopwatch.Time
+        let oks, errs = Choice.partition results
+        test <@ 10+12 = Array.length oks
+                && time.Elapsed > s 2 && time.Elapsed < s 6
+                && 2 = Array.length errs
+                && errs |> Array.forall (function :? Polly.Bulkhead.BulkheadRejectedException -> true | _ -> false) @>
+        let evnts = buffer.Take()
+        let shed = function
+            | Shed ("default","(default)","def",tags) -> Some tags
+            | x -> failwithf "Unexpected event %A" x
+        let shed = evnts |> Seq.choose shed |> Array.ofSeq
+        test <@ 2 = Array.length shed
+                && shed |> Array.exists (List.contains ("clientIp","A"))
+                && shed |> Array.exists (List.contains ("clientDomain","B")) @> }
+
+    let limitWithLimitBy = """{ "services": { "default": {
+        "calls": {},
+        "defaultPolicy": "def",
+        "policies": {
+            "def": [
+                { "rule": "Limit", "maxParallel": 24, "maxQueue": 0 },
+                { "rule": "LimitBy", "maxParallel": 2, "maxQueue": 3, "tag": "clientIp" }
+            ]
+        }
+}}}"""
+
+    let [<Fact>] ``When allied with a limit rule, sheds load above limit, and provides clear logging`` () = async {
+        let pol = Parser.parse(limitWithLimitBy).CreatePolicy log
+        let ap = pol.Find("default","any")
+        test <@ [expectedRule] = ap.Policy.taggedLimits @>
+        let contending =
+            let alternateIps i =
+                match i % 2 with
+                | 0 -> "A"
+                | _ -> "B"
+            Seq.replicate 12 runOk
+            |> Seq.zip (Seq.init 12 alternateIps)
+        let notContending =
+            let alternateUnderRadar i =
+                match i % 3 with
+                | 0 -> "C"
+                | 1 -> "D"
+                | _ -> "E"
+            Seq.replicate 12 runOk
+            |> Seq.zip (Seq.init 12 alternateUnderRadar)
+        let mkTags tags =
+            tags |> dict |> System.Collections.ObjectModel.ReadOnlyDictionary
+        let! time, results =
+            Seq.append notContending contending
+            // Catch inside so the first throw doesnt cancel the overall execution
+            |> Seq.map(fun (ip, op) -> ap.Execute(op, tags=mkTags ["clientIp",ip]) |> Async.Catch)
+            |> Async.Parallel
+            |> Stopwatch.Time
+        let oks, errs = Choice.partition results
+        test <@ 10+12 = Array.length oks
+                && time.Elapsed > s 2 && time.Elapsed < s 6
+                && 2 = Array.length errs
+                && errs |> Array.forall (function :? Polly.Bulkhead.BulkheadRejectedException -> true | _ -> false) @>
+        let evnts = buffer.Take()
+        let queuedOrShed = function
+            | Call ("(default)",MaybeQueuing) as x -> Choice1Of3 x
+            | Deferred ("default","(default)","def",[tag],delay) as x -> Choice2Of3 (tag,delay)
+            | Shed ("default","(default)","def",[tag]) as x -> Choice3Of3 (tag,x)
+            | x -> failwithf "Unexpected event %A" x
+        let queued,waited,shed = evnts |> Seq.map queuedOrShed |> Choice.partition3
+        let delayed = waited |> Array.filter (fun (_tag,x) -> x > ms 500)
+        test <@ 0 = Array.length queued // We're not triggering any queueing on the 'Limit' rule
+                && between 9 (24-10) (Array.length delayed) // Typically, 3+3+1+1+1 should get delayed, but depending on scheduling, some won't get logged as such, and we don't want a flickering test
+                && ['A'..'E'] |> Seq.forall (fun expected -> delayed |> Seq.exists (fun (tag,_delay) -> tag = ("clientIp",string expected)))
+                && 2 = Array.length shed @> }
 
 type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output
@@ -494,7 +617,6 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
         let ap = pol.Find("default","any")
         test <@ not ap.Policy.isolate
                 && Some { expectedRules with dryRun = true } = ap.Policy.cutoff @>
-        let r = Random()
         let! time, results =
             [0 ; 501 ; 2001; 2001; 501; 0]
             |> Seq.mapi (fun i duration -> (if i % 2 = 0 then runError else runOk) (ms duration))
@@ -515,7 +637,7 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
         // even the zero delay ones could in extreme circumstances end up with wierd timing effects
         test <@ let breached,wouldBeCancelled = Array.length breached, Array.length wouldBeCancelled
                 between 0 4 <| breached // should be = 2, but we'll settle for this weaker assertion
-                && between 1 5 <| wouldBeCancelled
+                && between 1 6 <| wouldBeCancelled
                 && between 1 6 <| breached + wouldBeCancelled @> }
 
     let [<Fact>] ``when active, cooperatively cancels requests exceeding the cutoff duration`` () = async {

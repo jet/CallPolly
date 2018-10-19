@@ -101,6 +101,29 @@ type Parsing(output : Xunit.Abstractions.ITestOutputHelper) =
         raisesWith <@ Parser.parse defs @>
             (fun x -> <@ x.Message.StartsWith "Include Rule at 'default->(default)->pol' refers recursively to 'pol' (policies: " @>)
 
+
+/// Testing derivation of Policy info
+type PolicyParsing(output : Xunit.Abstractions.ITestOutputHelper) =
+    let log = LogHooks.createLogger output
+
+    let [<Fact>] ``Multiple limit rules stack correctly`` () : unit =
+        let defs = """{ "services": { "svc": {
+            "calls": { "call": "default" },
+            "defaultPolicy": null,
+            "policies": {
+                "default" : [
+                    { "rule": "LimitBy", "tag": "clientDomain", "maxParallel": 3, "maxQueue": 2 },
+                    { "rule": "LimitBy", "maxParallel": 2, "maxQueue": 3, "tag": "clientIp" }
+                ]
+            }
+}}}"""
+
+        let res = Parser.parse(defs).CreatePolicy log
+        let limits = trap <@ res.TryFind("svc","call").Value.Policy.taggedLimits @>
+        let first : Rules.TaggedBulkheadConfig = { tag="clientDomain"; dop=3; queue=2 }
+        let second : Rules.TaggedBulkheadConfig = { tag="clientIp"; dop=2; queue=3 }
+        test <@ [ first; second ]  = limits @>
+
 /// Testing derivation of Config info
 type ConfigParsing(output : Xunit.Abstractions.ITestOutputHelper) =
     let log = LogHooks.createLogger output

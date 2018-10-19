@@ -2,8 +2,9 @@
 
 open Polly
 open System
-open System.Collections.Generic
 open System.Collections.Concurrent
+open System.Collections.Generic
+open System.Collections.ObjectModel
 open System.Diagnostics
 open System.Threading
 open System.Threading.Tasks
@@ -14,17 +15,35 @@ module private Option =
 
 type BreakerConfig = { window: TimeSpan; minThroughput: int; errorRateThreshold: float; retryAfter: TimeSpan; dryRun: bool }
 type BulkheadConfig = { dop: int; queue: int; dryRun: bool }
+type TaggedBulkheadConfig = { tag: string; dop: int; queue: int }
 type CutoffConfig = { timeout: TimeSpan; sla: TimeSpan option; dryRun: bool }
 type PolicyConfig =
     {   // Prettify DumpState diagnostic output - this structure is not roundtripped but isolated circuits stand out better when rare
         [<Newtonsoft.Json.JsonProperty(DefaultValueHandling=Newtonsoft.Json.DefaultValueHandling.Ignore)>]
         isolate: bool
-        cutoff: CutoffConfig option; limit: BulkheadConfig option; breaker: BreakerConfig option }
+        cutoff: CutoffConfig option; limit: BulkheadConfig option; taggedLimits: TaggedBulkheadConfig list; breaker: BreakerConfig option }
 
-type GovernorState = { circuitState : string option; bulkheadAvailable : int option; queueAvailable : int option }
+type GovernorState =
+    {   circuitState : string option;
+        bulkheadAvailable : int option; queueAvailable : int option
+        // sic - array, rendered as null so it does not get rendered where not applicable
+        taggedAvailabilities : TaggedBulkheadState[] }
+and TaggedBulkheadState =
+    {   tag: string
+        items: MultiBulkheadState list }
+and MultiBulkheadState =
+    {   value: string
+        bulkheadAvailable : int
+        queueAvailable : int }
+
+let emptyRod : IReadOnlyDictionary<string,string> = ReadOnlyDictionary(Dictionary()) :> _
 
 type Polly.Context with
     member __.Log = __.Item("log") :?> Serilog.ILogger
+    member __.Tags : IReadOnlyDictionary<string,string> =
+        match __.TryGetValue "tags" with
+        | true, (:? IReadOnlyDictionary<string,string> as v) -> v
+        | _ -> emptyRod
 
 /// Translates a PolicyConfig's rules to a Polly IAsyncPolicy instance that gets held in the ActionPolicy
 type Governor
@@ -46,7 +65,12 @@ type Governor
             Some <| Policy.TimeoutAsync(cutoff.timeout)
         | _ -> None
     let logQueuing log = log |> Events.Log.queuing (serviceName, callName)
-    let logDeferral log interval concurrencyLimit = log |> Events.Log.deferral (serviceName, callName, policyName) interval concurrencyLimit
+    let logDeferral log interval tags =
+        let mkRod pairs : IReadOnlyDictionary<string,_> = System.Collections.ObjectModel.ReadOnlyDictionary(pairs |> dict) :> _
+        let configLimits = mkRod <| seq {
+            match config.limit with None -> () | Some limit -> yield "any", limit.dop
+            for limitBy in config.taggedLimits do yield limitBy.tag, limitBy.dop }
+        log |> Events.Log.deferral (serviceName, callName, policyName, configLimits) interval tags
     let logShedding log config = log |> Events.Log.shedding (serviceName, callName, policyName) config
     let logSheddingDryRun log = log |> Events.Log.sheddingDryRun (serviceName, callName)
     let logQueuingDryRun log = log |> Events.Log.queuingDryRun (serviceName, callName)
@@ -54,10 +78,19 @@ type Governor
         match config.limit with
         | None -> None
         | Some limit ->
-            let logRejection (c: Context) : Task = logShedding c.Log { dop = limit.dop; queue = limit.queue } ; Task.CompletedTask
+            let logRejection (c: Context) : Task = logShedding c.Log (c.Tags, Events.Any {dop = limit.dop; queue = limit.queue }) ; Task.CompletedTask
             let effectiveLimit = if limit.dryRun then Int32.MaxValue else limit.dop // https://github.com/App-vNext/Polly/issues/496#issuecomment-420183946
             stateLog.Debug("Establishing BulkheadAsync for {service:l}-{call:l} {effectiveLimit}+{queue}", serviceName, callName, effectiveLimit, limit.queue)
             Some <| Policy.BulkheadAsync(maxParallelization = effectiveLimit, maxQueuingActions = limit.queue, onBulkheadRejectedAsync = logRejection)
+    let multiBulkheads : BulkheadMulti.BulkheadMultiAsyncPolicy list =
+        [ for limitBy in config.taggedLimits ->
+            let logRejection (c: Context) = logShedding c.Log (c.Tags, Events.Tagged { tag = limitBy.tag; dop = limitBy.dop; queue = limitBy.queue })
+            stateLog.Debug("Establishing BulkheadAsyncMulti by {tag} for {service:l}-{call:l} {effectiveLimit}+{queue}", limitBy.tag, serviceName, callName, limitBy.dop, limitBy.queue)
+            let tryGetTagValue (c: Context) =
+                match c.Tags.TryGetValue limitBy.tag with
+                | true, value -> Some value
+                | _ -> None
+            BulkheadMulti.Policy.BulkheadMultiAsync(tag = limitBy.tag, maxParallelization = limitBy.dop, maxQueuingActions = limitBy.queue, tryGetTagValue=tryGetTagValue, onBulkheadRejected = logRejection) ]
     let logBreaking (exn : exn) (timespan: TimeSpan) =
         match config with
         | { isolate = true } -> ()
@@ -96,6 +129,7 @@ type Governor
     let asyncPolicy : IAsyncPolicy option =
         [|  match maybeCutoff with Some x -> yield x :> IAsyncPolicy | _ -> ()
             match maybeBulkhead with Some x -> yield x :> IAsyncPolicy | _ -> ()
+            for b in multiBulkheads do yield b :> IAsyncPolicy
             match maybeCb with Some x -> yield x :> IAsyncPolicy | _ -> () |]
         |> function
             | [||] ->
@@ -128,7 +162,7 @@ type Governor
             None
 
     /// Execute and/or log failures regarding invocation of a function with the relevant policy applied
-    member __.Execute(inner : Async<'a>, ?log) : Async<'a> =
+    member __.Execute(inner : Async<'a>, ?log : Serilog.ILogger, ?tags: IReadOnlyDictionary<string,string>) : Async<'a> =
         let callLog = defaultArg log stateLog
         match asyncPolicy with
         | None ->
@@ -161,11 +195,11 @@ type Governor
                     let activeCount = Int32.MaxValue - bh.BulkheadAvailableCount
                     if activeCount > limit.dop + limit.queue then logSheddingDryRun callLog
                     elif activeCount > limit.dop && wasFull then logQueuingDryRun callLog
-                | { limit = Some ({ dryRun = false } as limit) }, _ ->
+                | { limit = Some { dryRun = false } }, _ ->
                     let commenceProcessingTicks = Stopwatch.GetTimestamp()
                     let deferralInterval = Events.StopwatchInterval(startTicks, commenceProcessingTicks)
                     if (let e = deferralInterval.Elapsed in e.TotalMilliseconds) > 1. then
-                        logDeferral callLog deferralInterval limit.dop
+                        logDeferral callLog deferralInterval (defaultArg tags emptyRod)
                 | _ -> ()
 
                 // sic - cancellation of the inner computation needs to be controlled by Polly's chain of handlers
@@ -174,8 +208,12 @@ type Governor
             let execute = async {
                 let! ct = Async.CancellationToken // Grab async cancellation token of this `Execute` call, so cancellation gets propagated into the Polly [wrap]
                 callLog.Debug("Policy Execute Inner {service:l}-{call:l}", serviceName, callName)
-                let ctx = Seq.singleton ("log", box callLog) |> dict
-                try return! polly.ExecuteAsync(startInnerTask, ctx, ct) |> Async.AwaitTaskCorrect
+                let contextData = dict <| seq {
+                    yield ("log", box callLog)
+                    match tags with
+                    | None -> ()
+                    | Some (t : IReadOnlyDictionary<string,string>) -> yield "tags", box t }
+                try return! polly.ExecuteAsync(startInnerTask, contextData, ct) |> Async.AwaitTaskCorrect
                 // TODO find/add a cleaner way to use the Polly API to log when the event fires due to the the circuit being Isolated/Broken
                 with LogWhenRejectedFilter callLog jitProcessingInterval -> return! invalidOp "not possible; Filter always returns None" }
             match config.cutoff with
@@ -198,7 +236,18 @@ type Governor
     member __.InternalState : GovernorState =
         {   circuitState = maybeCb |> Option.map (fun cb -> string cb.CircuitState)
             bulkheadAvailable = maybeBulkhead |> Option.map (fun bh -> bh.BulkheadAvailableCount)
-            queueAvailable = maybeBulkhead |> Option.map (fun bh -> bh.QueueAvailableCount) }
+            queueAvailable = maybeBulkhead |> Option.map (fun bh -> bh.QueueAvailableCount)
+            taggedAvailabilities =
+                match multiBulkheads with
+                | [] -> null
+                | tbhs ->
+                    [| for tbh in tbhs ->
+                        {   tag = tbh.Tag
+                            items =
+                                [ for KeyValue(tagValue,bh) in tbh.DumpState() ->
+                                    {   value = tagValue
+                                        bulkheadAvailable = bh.BulkheadAvailableCount
+                                        queueAvailable = bh.QueueAvailableCount } ] } |]}
 
 type [<RequireQualifiedAccess>] ChangeLevel = Added | ConfigurationAndPolicy | Configuration | Policy
 
@@ -231,8 +280,8 @@ type CallPolicy<'TConfig when 'TConfig: equality> (makeGoverner : CallConfig<'TC
     member __.Config = cfg.config
 
     /// Execute the call, apply the policy rules
-    member __.Execute(inner : Async<'t>, ?log) =
-        governor.Execute(inner,?log=log)
+    member __.Execute(inner : Async<'t>, ?log, ?tags) =
+        governor.Execute(inner, ?log=log, ?tags=tags)
 
     /// Facilitates dumping for diagnostics
     member __.InternalState =
