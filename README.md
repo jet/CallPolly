@@ -18,18 +18,18 @@ CallPolly wraps Polly to provide:
 
 ## Non-goals
 
-- low level policy implementations should live elsewhere (see [CONTRIBUTION notes](#contribution-notes))
-- the core CallPolly library faciltates, but should never bind _directly_ to any specific log or metrics emission sink
+- low level policy implementations should live elsewhere (see [CONTRIBUTION notes](#contribution-notes)) - _[e.g., `BulkheadMulti` needs to move out](https://github.com/App-vNext/Polly/issues/507)_
+- the core CallPolly library facilitates, but should never bind _directly_ to any specific log or metrics emission sink
 
 # Dependencies
 
-The core library extends [`Polly`](https://github.com/App-vNext/Polly) and is intended to work based on `netstandard20`
+The core library extends [`Polly`](https://github.com/App-vNext/Polly) and is intended to support running on `netstandard2.0` and `net461`.
 
 For reasons of code clarity and performance, a core secondary dependency is [`Serilog`](https://github.com/serilog/serilog); the pervasiveness and low dependency nature of Serilog and the [practical unlimited interop with other loggers/targets/sinks](https://github.com/serilog/serilog/wiki/Provided-Sinks) is considered enough of a win to make this a hard dependency _e.g., if your logger is NLog, it's 2 lines of code to [forward to it](https://www.nuget.org/packages/serilog.sinks.nlog) with minimal perf cost over CallPolly binding to that directly_.
 
-Being written in F#, there's a dependency on `FSharp.Core`.
+Being written in F#, there's a dependency on `FSharp.Core` (v4.5 for `netstandard2.0`, or anything >= `3.1.2.5` / F# 3.1 as present in VS 2012 if you're targeting `net461`).
 
-The tests [`xUnit.net`](https://github.com/xunit/xunit), [`FSCheck.xUnit`](https://github.com/fscheck/FsCheck), [`Unquote`](https://github.com/SwensenSoftware/unquote) and [`Serilog.Sinks.Seq`](https://github.com/serilog/serilog-sinks-seq) (to view, see https://getseq.net, which provides a free single user license for clearer insight into log traces).
+The tests use [`xUnit.net`](https://github.com/xunit/xunit), [`FSCheck.xUnit`](https://github.com/fscheck/FsCheck), [`Unquote`](https://github.com/SwensenSoftware/unquote) and [`Serilog.Sinks.Seq`](https://github.com/serilog/serilog-sinks-seq) (to view, see https://getseq.net, which provides a free single user license for clearer insight into log traces).
 
 The acceptance tests add a reliance on [`Newtonsoft.Json`](https://github.com/JamesNK/Newtonsoft.Json).
 
@@ -50,7 +50,7 @@ In service of this, the assumption is that most extensions to CallPolly should l
 
 Yes, there should be a real README with real examples; we'll get there :sweat_smile:
 
-See the [acceptance tests](https://github.com/jet/CallPolly/blob/master/tests/CallPolly.Acceptance/Orchestration.fs#L142) for behavior implied by this configuration:
+See the [acceptance tests](https://github.com/jet/CallPolly/blob/master/tests/CallPolly.Acceptance/Scenarios.fs) for behavior implied by this configuration:
 ```
 { "services": {
 
@@ -62,10 +62,10 @@ See the [acceptance tests](https://github.com/jet/CallPolly/blob/master/tests/Ca
     "defaultPolicy": null,
     "policies": {
         "quick": [
-            { "rule": "Cutoff",     "timeoutMs": 1000, "slaMs": 500 }
+            { "rule": "Cutoff", "timeoutMs": 1000, "slaMs": 500 }
         ],
         "slow": [
-            { "rule": "Cutoff",     "timeoutMs": 10000, "slaMs": 5000 }
+            { "rule": "Cutoff", "timeoutMs": 10000, "slaMs": 5000 }
         ]
     }
 },
@@ -78,10 +78,10 @@ See the [acceptance tests](https://github.com/jet/CallPolly/blob/master/tests/Ca
     "defaultPolicy": null,
     "policies": {
         "default": [
-            { "rule": "Limit",      "maxParallel": 10, "maxQueue": 3 }
+            { "rule": "Limit",  "maxParallel": 10, "maxQueue": 3 }
         ],
         "looser": [
-            { "rule": "Limit",      "maxParallel": 100, "maxQueue": 300 }
+            { "rule": "Limit",  "maxParallel": 100, "maxQueue": 300 }
         ],
         "defaultBroken": [
             { "rule": "Isolate" }
@@ -95,8 +95,22 @@ See the [acceptance tests](https://github.com/jet/CallPolly/blob/master/tests/Ca
     "defaultPolicy": null,
     "policies": {
         "default": [
-            { "rule": "Limit",      "maxParallel": 2, "maxQueue": 8 },
-            { "rule": "Break",      "windowS": 5, "minRequests": 10, "failPct": 20, "breakS": 1 }
+            { "rule": "Limit",  "maxParallel": 2, "maxQueue": 8 },
+            { "rule": "Break",  "windowS": 5, "minRequests": 10, "failPct": 20, "breakS": 1 },
+            { "rule": "Uri",    "base": "https://upstreamb" },
+            { "rule": "Log",    "req": "Always", "res": "Always" }
+        ]
+    }
+},
+"upstreamC": {
+    "calls": {},
+    "defaultPolicy": "default",
+    "policies": {
+        "default": [
+            { "rule": "Limit",  "maxParallel": 10, "maxQueue": 20 },
+            { "rule": "LimitBy","maxParallel": 2, "maxQueue": 4, "tag": "clientIp" },
+            { "rule": "LimitBy","maxParallel": 2, "maxQueue": 4, "tag": "clientDomain" },
+            { "rule": "LimitBy","maxParallel": 2, "maxQueue": 4, "tag": "clientType" }
         ]
     }
 }

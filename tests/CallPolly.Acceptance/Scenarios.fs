@@ -68,6 +68,18 @@ let policy = """{
                     { "rule": "Log",    "req": "Always", "res": "Always" }
                 ]
             }
+        },
+        "upstreamC": {
+            "calls": {},
+            "defaultPolicy": "default",
+            "policies": {
+                "default": [
+                    { "rule": "Limit",  "maxParallel": 10, "maxQueue": 20 },
+                    { "rule": "LimitBy","maxParallel": 2, "maxQueue": 4, "tag": "clientIp" },
+                    { "rule": "LimitBy","maxParallel": 2, "maxQueue": 4, "tag": "clientDomain" },
+                    { "rule": "LimitBy","maxParallel": 2, "maxQueue": 4, "tag": "clientType" }
+                ]
+            }
         }
     }
 }
@@ -94,7 +106,8 @@ type Act =
 type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
 
     let run serviceName callName f = policy.Find(serviceName, callName).Execute(f)
-    let runLog callLog serviceName callName f = policy.Find(serviceName, callName).Execute(f, callLog)
+    let runLog callLog serviceName callName f = policy.Find(serviceName, callName).Execute(f, log=callLog)
+    let runWithTags serviceName callName tags f = policy.Find(serviceName, callName).Execute(f, tags=tags)
 
     let _upstreamA1 (a : Act) = async {
         log.Information("A1")
@@ -130,12 +143,26 @@ type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
         return! upstreamB1 a
     }
 
+    let _upstreamC1 (a : Act) = async {
+        log.Information("C1")
+        return! a.Execute() }
+    let upstreamC1 tags a = runWithTags "upstreamC" "Call1" tags <| _upstreamC1 a
+
+    let _apiC tags (a : Act) = async {
+        log.Information "ApiC"
+        return! upstreamC1 tags a
+    }
+
     member __.ApiOneSecondSla a1 a2 = run "ingres" "api-a" <| _apiA a1 a2
     member __.ApiOneSecondSlaLog callLog a1 a2 = runLog callLog "ingres" "api-a" <| _apiA a1 a2
 
     member __.ApiTenSecondSla b1 = run "ingres" "api-b" <| _apiB b1
 
     member __.ApiManualBroken = _apiABroken
+
+    member __.ApiMulti tags (a : Act) =
+        let tags = tags |> dict |> System.Collections.ObjectModel.ReadOnlyDictionary
+        run "ingres" "api-a" <| _apiC tags a
 
 let (|Http200|Http500|Http502|Http503|Http504|) : Choice<int,exn> -> _ = function
     | Choice1Of2 _ -> Http200
@@ -264,14 +291,32 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
     let [<Fact>] ``Limit - Bulkhead functionality`` () = async {
         let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
-        // 10 fails put it into circuit breaking mode - let's do 9 and the step carefully
         let alternateBetweenTwoUpstreams i =
             if i % 2 = 0 then sut.ApiOneSecondSla Succeed (DelayMs 100)
-            else sut.ApiOneSecondSla (DelayMs 100) Succeed
+            else sut.ApiOneSecondSla (DelayMs 1000) Succeed
             |> Async.Catch
         let! time, res = List.init 1000 alternateBetweenTwoUpstreams |> Async.Parallel |> Stopwatch.Time
-        let counts = res |> Seq.countBy (function Status s -> s) |> Seq.sortBy fst |> List.ofSeq
-        test <@ match counts with [200,successCount; 503,rejectCount] -> successCount < 200 && rejectCount > 800 | x -> failwithf "%A" x @>
+        let counts = res |> Seq.countBy (|Status|) |> Seq.sortBy fst |> List.ofSeq
+        test <@ match counts with
+                | [200,successCount; 503,rejectCount] -> successCount < 150 && rejectCount >= 850
+                | x -> failwithf "%A" x @>
+        test <@ between 0.3 2.5 (let t = time.Elapsed in t.TotalSeconds) @>
+    }
+
+    let [<Fact>] ``LimitBy - BulkheadMulti functionality`` () = async {
+        let policy = Parser.parse(policy).CreatePolicy log
+        let sut = Sut(log, policy)
+        let act i =
+            match i % 3 with
+            | 0 -> sut.ApiMulti ["clientIp","A"] (DelayMs 100)
+            | 1 -> sut.ApiMulti ["clientDomain","A"] (DelayMs 100)
+            | _ -> sut.ApiMulti ["clientType","A"] (DelayMs 100)
+            |> Async.Catch
+        let! time, res = List.init 1000 act |> Async.Parallel |> Stopwatch.Time
+        let counts = res |> Seq.countBy (|Status|) |> Seq.sortBy fst |> List.ofSeq
+        test <@ match counts with
+                | [200,successCount; 503,rejectCount] -> successCount < 40 && rejectCount >= 960
+                | x -> failwithf "%A" x @>
         test <@ between 0.3 2.5 (let t = time.Elapsed in t.TotalSeconds) @>
     }
 

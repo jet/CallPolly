@@ -72,6 +72,7 @@ module SerilogHelpers =
     open Serilog
     open Serilog.Events
     open System.Collections.Concurrent
+    open System.Collections.Generic
 
     /// Create a logger, targeting the specified outputs
     [<NoComparison>]
@@ -114,6 +115,9 @@ module SerilogHelpers =
             __.Clear()
             actual
 
+    let (|SerilogDict|_|) : Serilog.Events.LogEventPropertyValue -> IReadOnlyDictionary<ScalarValue,LogEventPropertyValue> option = function
+        | (:? Events.DictionaryValue as x) -> Some x.Elements
+        | _ -> None
     let (|SerilogScalar|_|) : Serilog.Events.LogEventPropertyValue -> obj option = function
         | (:? ScalarValue as x) -> Some x.Value
         | _ -> None
@@ -126,6 +130,14 @@ module SerilogHelpers =
         else None
     let (|SerilogString|_|) : LogEventPropertyValue -> string option = function SerilogScalar (:? string as y) -> Some y | _ -> None
     let (|SerilogBool|_|) : LogEventPropertyValue -> bool option = function SerilogScalar (:? bool as y) -> Some y | _ -> None
+    let (|MaybeMap|) (name : string) (e : LogEvent) : (string * string) list =
+        match e.Properties.TryGetValue name with
+        | true, (SerilogDict s) ->
+            [ for t in s do
+                match t with
+                | KeyValue (k,SerilogString v) -> yield (k.Value :?> string),v
+                | _ -> () ]
+        | _ -> List.empty
 
     let dumpEvent (x : LogEvent) =
         let formatter = Serilog.Formatting.Display.MessageTemplateTextFormatter("{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level}] {Message}{NewLine}{Exception}|{Properties}", null);
