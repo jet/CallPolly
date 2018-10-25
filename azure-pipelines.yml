@@ -13,6 +13,7 @@ jobs:
       $isPR = "$env:SYSTEM_PULLREQUEST_PULLREQUESTNUMBER" -ne ""
       $versionSuffix = if ($isTag) { "" } else { if ($isPR) { $versionSuffixPR } else { $versionSuffixBRANCH } };
       Write-Host "##vso[task.setvariable variable=VersionSuffix]$versionSuffix";
+    displayName: compute VersionSuffix
   - script: dotnet msbuild build.proj
     displayName: Test + Build
     env:
