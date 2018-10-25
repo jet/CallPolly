@@ -181,17 +181,18 @@ type Governor
             match config.cutoff with
             | None | Some { sla=None; dryRun=false } ->
                 return! execute
-            | Some ({ timeout=timeout; sla=sla; dryRun = dryRun } as config)->
+            | Some ({ timeout=timeout; sla=sla; dryRun = dryRun } as cutoffConfig)->
                 try return! execute
                 finally
                     if not jitProcessingInterval.IsValueCreated then
                         let processingInterval = jitProcessingInterval.Force()
                         let elapsed = processingInterval.Elapsed
                         stateLog.Debug("Policy Executed in {elapsedMs} {service:l}-{call:l}", elapsed.TotalMilliseconds, serviceName, callName)
-                        match sla with
-                        | _ when elapsed > timeout && dryRun -> logTimeout callLog config processingInterval
-                        | Some sla when elapsed > sla -> logBreach callLog sla processingInterval
-                        | _ -> () }
+                        if not config.isolate then
+                            match sla with
+                            | _ when elapsed > timeout && dryRun -> logTimeout callLog cutoffConfig processingInterval
+                            | Some sla when elapsed > sla -> logBreach callLog sla processingInterval
+                            | _ -> () }
 
     /// Diagnostic state
     member __.InternalState : GovernorState =
