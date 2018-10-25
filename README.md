@@ -8,6 +8,12 @@ Look no further for a mature, well thought out set of abstractions with a respon
 
 _Please raise GitHub issues for any questions specific to CallPolly so others can benefit from the discussion._
 
+# Building
+ ```
+# verify the integrity of the repo wrt being able to build/pack/test
+./build.ps1
+```
+
 ## Goals
 
 CallPolly wraps Polly to provide:

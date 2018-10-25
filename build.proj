@@ -1,21 +1,29 @@
-<?xml version="1.0" encoding="utf-8"?>
-<Project>
+<Project ToolsVersion="15.0" DefaultTargets="Build;Test">
 
   <Import Project="Directory.Build.props" />
+  
+  <PropertyGroup>
+
+    <Name>CallPolly</Name>
+    <Cfg>--configuration Release</Cfg>
+
+    <RepoRootDir>$([System.IO.Path]::GetFullPath("$(MSBuildThisFileDirectory)"))</RepoRootDir>
+    <Bin>-o $(RepoRootDir)bin</Bin>
+    <Ver>--version-suffix "$(VersionSuffix)"</Ver>
+
+    <BuildNumber Condition="'$(BuildNumber)' != ''">$([System.String]::Format('{0:0000000}',$([MSBuild]::Add($(BuildNumber), 0))))</BuildNumber>
+    <Suffix Condition=" '$(BuildNumber)' != '' AND '$(PullRequestId)' != ''">--version-suffix CI$(BuildNumber)-pr$(PullRequestId)</Suffix>
+    <Suffix Condition=" '$(BuildNumber)' != '' AND '$(PullRequestId)' == ''">--version-suffix CI$(BuildNumber)</Suffix>
+
+  </PropertyGroup>
 
   <Target Name="Build">
-    <Exec Command='dotnet build src/CallPolly -c Release --version-suffix "$(VersionSuffix)" ' WorkingDirectory="$(RepoRootDir)" IgnoreStandardErrorWarningFormat="true" />
-  </Target>
-
-  <Target Name="Pack">
-    <Exec Command='dotnet pack src/CallPolly -c Release -o "$(NupkgsDir)" --version-suffix "$(VersionSuffix)" ' WorkingDirectory="$(RepoRootDir)" IgnoreStandardErrorWarningFormat="true" />
+    <Exec Command="dotnet pack src/$(Name) $(Cfg) $(Bin) $(Ver)" />
   </Target>
 
   <Target Name="Test">
-    <Exec Command='dotnet test tests/CallPolly.Tests -c Release --logger:trx' WorkingDirectory="$(RepoRootDir)" IgnoreStandardErrorWarningFormat="true" />
-    <Exec Command='dotnet test tests/CallPolly.Acceptance -c Release --logger:trx' WorkingDirectory="$(RepoRootDir)" IgnoreStandardErrorWarningFormat="true" />
+    <Exec Command="dotnet test tests/$(Name).Tests $(Cfg) --logger:trx" />
+    <Exec Command="dotnet test tests/$(Name).Acceptance $(Cfg) --logger:trx" />
   </Target>
-
-  <Target Name="VSTest" DependsOnTargets="Test" />
 
 </Project>

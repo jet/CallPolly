@@ -9,6 +9,9 @@
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
+# Test results
+*.trx
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
@@ -21,7 +24,7 @@ bld/
 [Oo]bj/
 [Ll]og/
 
-# Visual Studio 2015 cache/options directory
+# Visual Studio 2015+ cache/options directory
 .vs/
 
 *_i.c
@@ -76,12 +79,6 @@ _ReSharper*/
 
 # JustCode is a .NET coding add-in
 .JustCode
-
-# TeamCity is a build add-in
-_TeamCity*
-
-# DotCover is a Code Coverage Tool
-*.dotCover
 
 # NCrunch
 _NCrunch_*

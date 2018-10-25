@@ -1,30 +1,26 @@
 <Project ToolsVersion="15.0">
-
   <PropertyGroup>
     <Authors>@jet @bartelink and contributors</Authors>
     <Company>Jet.com</Company>
     <Description>Apply systemwide resilience strategies consistently across subsystems, standing on Polly's shoulders</Description>
-    <PackageProjectUrl>https://github.com/jet/CallPolly</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/jet/callpolly</PackageProjectUrl>
     <PackageTags>polly bulkhead circuitbreaker timeout fsharp</PackageTags>
     <PackageLicenseUrl>https://github.com/jet/callpolly/blob/master/LICENSE</PackageLicenseUrl>
-    <Copyright>Copyright © 2016-8</Copyright>    
-    <RepositoryType>git</RepositoryType>
-    <RepositoryUrl>https://github.com/jet/https://github.com/jet/CallPolly.git</RepositoryUrl>  
-  </PropertyGroup>
-
-  <PropertyGroup>
-    <RepoRootDir>$([System.IO.Path]::GetFullPath("$(MSBuildThisFileDirectory)"))</RepoRootDir>
-    <NupkgsDir>$([System.IO.Path]::GetFullPath("$(MSBuildThisFileDirectory)/bin/nupkg"))</NupkgsDir>
-    <MonoOrEmpty Condition=" '$(OS)' != 'Windows_NT' ">mono </MonoOrEmpty>
+    <Copyright>Copyright © 2018</Copyright>
 
     <!-- SourceLink related properties https://github.com/dotnet/SourceLink#using-sourcelink -->
+
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <AllowedOutputExtensionsInPackageBuildOutputFolder>$(AllowedOutputExtensionsInPackageBuildOutputFolder);.pdb</AllowedOutputExtensionsInPackageBuildOutputFolder>
-    
+  </PropertyGroup>
+
+  <!-- Hacks to disable things for mono builds -->
+  <PropertyGroup>
+    <MonoOrEmpty Condition=" '$(OS)' != 'Windows_NT' ">mono </MonoOrEmpty>
+
     <!-- disable sourcelink on mono, to workaround https://github.com/dotnet/sourcelink/issues/155 -->
     <EnableSourceLink Condition=" '$(OS)' != 'Windows_NT' AND '$(MSBuildRuntimeType)' != 'Core' ">false</EnableSourceLink>
     <EnableSourceControlManagerQueries>$(EnableSourceLink)</EnableSourceControlManagerQueries>
   </PropertyGroup>
-
 </Project>
