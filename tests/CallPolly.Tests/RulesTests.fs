@@ -298,13 +298,13 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
         "defaultPolicy": "def",
         "policies": {
             "def": [
-                { "rule": "Break", "windowS": 5, "minRequests": 2, "failPct": 50, "breakS": .5, "dryRun": false }
+                { "rule": "Break", "windowS": 10, "minRequests": 2, "failPct": 50, "breakS": 1.0, "dryRun": false }
             ]
         }
 }}}"""
     let dryRunDefs = defs.Replace("false","true")
 
-    let expectedRules : Rules.BreakerConfig = { window = s 5; minThroughput = 2; errorRateThreshold = 0.5; retryAfter = TimeSpan.FromSeconds 0.5; dryRun = false }
+    let expectedRules : Rules.BreakerConfig = { window = s 10; minThroughput = 2; errorRateThreshold = 0.5; retryAfter = TimeSpan.FromSeconds 1.; dryRun = false }
 
     let [<Fact>] ``applies break constraints, logging each application and status changes appropriately`` () = async {
         let pol = Parser.parse(defs).CreatePolicy log
@@ -314,30 +314,37 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
         let runTimeout = async {
             let timeout = async { return raise <| TimeoutException() }
             let! result = ap.Execute(timeout) |> Async.Catch
-            test <@ match result with Choice2Of2 (:? TimeoutException) -> true | _ -> false @> }
+            let ex = trap <@ match result with Choice2Of2 x -> x | x -> failwithf "Unexpected %A" x @>
+            test <@ ex :? TimeoutException @> }
         let shouldBeOpen = async {
             let fail = async { return failwith "Unexpected" }
             let! result = ap.Execute(fail) |> Async.Catch
-            test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.BrokenCircuitException) -> true | _ -> false @>
-            [Broken ("default","(default)","def")] =! buffer.Take() }
+            test <@ match result with Choice2Of2 (:? Polly.CircuitBreaker.BrokenCircuitException) -> true | _ -> false @> }
         let runSuccess = async {
             let success = async { return 42 }
             let! result = ap.Execute(success)
             42 =! result }
         do! runSuccess
+        do! runSuccess
+        Serilog.Log.Warning("P1")
         do! runTimeout
+        Serilog.Log.Warning("P2")
+        do! runTimeout
+        Serilog.Log.Warning("P3")
         [Call ("(default)",Breaking)] =! buffer.Take()
         do! shouldBeOpen
+        [Broken ("default","(default)","def")] =! buffer.Take()
         // Waiting for 1s should have transitioned it to HalfOpen
-        do! Async.Sleep (s 1)
+        do! Async.Sleep (ms 1100) // 1s + 100ms fudge factor
+        Serilog.Log.Warning("P4")
         do! runSuccess
         [Status ("(default)",Pending); Status ("(default)",Resetting)] =! buffer.Take()
         do! runTimeout
         [Call ("(default)",Breaking)] =! buffer.Take()
-        do! shouldBeOpen
         // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
-        let changedRules = defs.Replace(".5","5")
+        let changedRules = defs.Replace("1.0","1.1")
         Parser.parse(changedRules).UpdatePolicy pol |> ignore
+        Serilog.Log.Warning("P5")
         do! runSuccess }
 
     let [<Fact>] ``dryRun mode prevents breaking, logs status changes appropriately`` () = async {
