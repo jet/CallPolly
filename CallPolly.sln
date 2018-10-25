@@ -11,8 +11,9 @@ Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "CallPolly.Tests", "tests\Ca
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = ".project", ".project", "{6047ADD6-C48C-4583-A5C6-58FDF7A0DC10}"
 	ProjectSection(SolutionItems) = preProject
-		build.cmd = build.cmd
+		azure-pipelines.yml = azure-pipelines.yml
 		build.proj = build.proj
+		build.ps1 = build.ps1
 		Directory.Build.props = Directory.Build.props
 		global.json = global.json
 		LICENSE = LICENSE

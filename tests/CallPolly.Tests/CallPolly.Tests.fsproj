@@ -15,6 +15,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\CallPolly\CallPolly.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Update="FSharp.Core" Version="3.1.2.5" Condition=" '$(TargetFramework)' == 'net461' " />
     <PackageReference Update="FSharp.Core" Version="4.3.4" Condition=" '$(TargetFramework)' == 'netstandard2.0' " />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="15.8.0" />
@@ -24,8 +28,11 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.3.1" />
   </ItemGroup>
 
+  <!-- Workaround for https://github.com/xunit/xunit/issues/1357 -->
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CallPolly\CallPolly.fsproj" />
+    <Content Include="xunit.runner.json" Condition=" '$(OS)' != 'Windows_NT' ">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>
