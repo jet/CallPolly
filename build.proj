@@ -1,26 +1,25 @@
-<Project ToolsVersion="15.0" DefaultTargets="Build;Test">
+<Project ToolsVersion="15.0" DefaultTargets="Test;Build">
+
+  <Import Project="Directory.Build.props" />
 
   <PropertyGroup>
 
     <Name>CallPolly</Name>
     <Cfg>--configuration Release</Cfg>
 
-    <RepoRootDir>$([System.IO.Path]::GetFullPath("$(MSBuildThisFileDirectory)"))</RepoRootDir>
-    <Bin>-o $(RepoRootDir)bin</Bin>
-
-    <BuildNumber Condition="'$(BuildNumber)' != ''">$([System.String]::Format('{0:0000000}',$([MSBuild]::Add($(BuildNumber), 0))))</BuildNumber>
-    <Suffix Condition=" '$(BuildNumber)' != '' AND '$(PullRequestId)' != ''">--version-suffix CI$(BuildNumber)-pr$(PullRequestId)</Suffix>
-    <Suffix Condition=" '$(BuildNumber)' != '' AND '$(PullRequestId)' == ''">--version-suffix CI$(BuildNumber)</Suffix>
+    <ThisDirAbsolute>$([System.IO.Path]::GetFullPath("$(MSBuildThisFileDirectory)"))</ThisDirAbsolute>
+    <PackOptions>-o $(ThisDirAbsolute)bin --version-suffix "$(VersionSuffix)"</PackOptions>
+    <TestOptions>--logger:trx</TestOptions>
 
   </PropertyGroup>
 
   <Target Name="Build">
-    <Exec Command="dotnet pack src/$(Name) $(Cfg) $(Bin) $(Suffix)" />
+    <Exec Command="dotnet pack src/$(Name) $(Cfg) $(PackOptions)" />
   </Target>
 
   <Target Name="Test">
-    <Exec Command="dotnet test tests/$(Name).Tests $(Cfg)" />
-    <Exec Command="dotnet test tests/$(Name).Acceptance $(Cfg)" />
+    <Exec Command="dotnet test tests/$(Name).Tests $(Cfg) $(TestOptions)" />
+    <Exec Command="dotnet test tests/$(Name).Acceptance $(Cfg) $(TestOptions)" />
   </Target>
 
 </Project>

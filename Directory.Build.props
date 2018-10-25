@@ -1,6 +1,5 @@
 <Project ToolsVersion="15.0">
   <PropertyGroup>
-    <VersionPrefix>0.0.5</VersionPrefix>
     <Authors>@jet @bartelink and contributors</Authors>
     <Company>Jet.com</Company>
     <Description>Apply systemwide resilience strategies consistently across subsystems, standing on Polly's shoulders</Description>
@@ -13,5 +12,8 @@
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <AllowedOutputExtensionsInPackageBuildOutputFolder>$(AllowedOutputExtensionsInPackageBuildOutputFolder);.pdb</AllowedOutputExtensionsInPackageBuildOutputFolder>
+    <!-- disable sourcelink on mono, to workaround https://github.com/dotnet/sourcelink/issues/155 -->
+    <EnableSourceLink Condition=" '$(OS)' != 'Windows_NT' AND '$(MSBuildRuntimeType)' != 'Core' ">false</EnableSourceLink>
+    <EnableSourceControlManagerQueries>$(EnableSourceLink)</EnableSourceControlManagerQueries>
   </PropertyGroup>
 </Project>

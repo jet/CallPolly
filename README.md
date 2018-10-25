@@ -46,6 +46,12 @@ In service of this, the assumption is that most extensions to CallPolly should l
 
 => **"can we make CallPolly help you achieve that without making it more complex for everyone else?**
 
+# Building
+ ```
+# verify the integrity of the repo wrt being able to build/pack/test
+./build.ps1
+```
+
 # Taster: example policy
 
 Yes, there should be a real README with real examples; we'll get there :sweat_smile:
