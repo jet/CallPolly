@@ -8,12 +8,6 @@ Look no further for a mature, well thought out set of abstractions with a respon
 
 _Please raise GitHub issues for any questions specific to CallPolly so others can benefit from the discussion._
 
-# Building
- ```
-# verify the integrity of the repo wrt being able to build/pack/test
-./build.ps1
-```
-
 ## Goals
 
 CallPolly wraps Polly to provide:
@@ -51,6 +45,12 @@ In service of this, the assumption is that most extensions to CallPolly should l
 - has the proposed feature [proved itself broadly applicable](https://en.wikipedia.org/wiki/Rule_of_three_(computer_programming)) ?
 
 => **"can we make CallPolly help you achieve that without making it more complex for everyone else?**
+
+# Building
+ ```
+# verify the integrity of the repo wrt being able to build/pack/test
+./build.ps1
+```
 
 # Taster: example policy
 
