@@ -118,14 +118,14 @@ type Governor
                 | None -> Unchecked.defaultof<_>
             log |> Events.Log.actionBroken (serviceName, callName, policyName) config
             None
-        | :? Polly.Timeout.TimeoutRejectedException as e ->
+        | :? Polly.Timeout.TimeoutRejectedException ->
             logTimeout log config.cutoff.Value <| processingInterval.Force()
             None
-        | _ when true ->
-            None
-        | _ ->
+        | _ when 1=2 ->
             invalidOp "not possible"
             Some () // Compiler gets too clever if we never return Some
+        | _ ->
+            None
 
     /// Execute and/or log failures regarding invocation of a function with the relevant policy applied
     member __.Execute(inner : Async<'a>, ?log) : Async<'a> =
