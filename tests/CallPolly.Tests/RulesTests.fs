@@ -396,10 +396,10 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
     let expectedRules : Rules.BulkheadConfig = { dop = 2; queue = 3; dryRun = false }
 
     let runError = async {
-        do! Async.Sleep (s 1)
+        do! Async.Sleep (ms 1000)
         return raise (System.TimeoutException()) }
     let runOk = async {
-        do! Async.Sleep (s 1)
+        do! Async.Sleep (ms 1000)
         return 42 }
 
     let [<Fact>] ``dryRun mode does not inhibit processing`` () = async {
@@ -412,14 +412,14 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
             |> Seq.mapi (fun i f -> async {
                 // Stagger the starts - the dryRun mode does not force any waiting so wait before we ask for the start so we
                 // get it into a state where at least 1 start shows queuing would normally take place
-                do! Async.Sleep(ms (200 * i))
+                do! Async.Sleep(ms (10 * i))
                 // Catch inside so the first throw doesnt cancel the overall execution
                 return! ap.Execute f |> Async.Catch })
             |> Async.Parallel
             |> Stopwatch.Time
         let oks, errs = Choice.partition results
         test <@ 3 = Array.length oks
-                && time.Elapsed < ms 2500 // 1s+5*200+ 500ms fudge factor
+                && time.Elapsed < s 4 // 1000ms*2+5*10+ 1000ms fudge factor
                 && 3 = Array.length errs
                 && errs |> Seq.forall (fun x -> x.GetType() = typedefof<TimeoutException>) @>
         let evnts = buffer.Take()
@@ -443,7 +443,7 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
             |> Stopwatch.Time
         let oks, errs = Choice.partition results
         test <@ 5 = Array.length oks
-                && time.Elapsed > s 2 && time.Elapsed < s 4
+                && time.Elapsed > s 2 && time.Elapsed < s 5 // 1500ms*2+5*200+ 1000ms fudge factor
                 && 1 = Array.length errs
                 && match Seq.exactlyOne errs with :? Polly.Bulkhead.BulkheadRejectedException -> true | _ -> false @>
         let evnts = buffer.Take()
@@ -496,14 +496,14 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
                 && Some { expectedRules with dryRun = true } = ap.Policy.cutoff @>
         let r = Random()
         let! time, results =
-            [0 ; 501 ; 1501; 1501; 501; 0]
+            [0 ; 501 ; 2001; 2001; 501; 0]
             |> Seq.mapi (fun i duration -> (if i % 2 = 0 then runError else runOk) (ms duration))
             |> Seq.map (ap.Execute >> Async.Catch)
             |> Async.Parallel
             |> Stopwatch.Time
         let oks, errs = Choice.partition results
         test <@ 3 = Array.length oks
-                && time.Elapsed >= ms 1501 && time.Elapsed < ms 2001 // 1501ms+ 500ms fudge factor
+                && time.Elapsed >= ms 2001 && time.Elapsed < ms 5501 // 2001ms*2+ 1.5s fudge factor
                 && 3 = Array.length errs
                 && errs |> Seq.forall (fun x -> x.GetType() = typeof<TimeoutException>) @>
         let evnts = buffer.Take()

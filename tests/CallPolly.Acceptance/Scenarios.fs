@@ -161,7 +161,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let! time, (Status res) = sut.ApiOneSecondSla Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
         let entries = buffer.Take()
         test <@ res = 503
-                && between 1. 2. (let t = time.Elapsed in t.TotalSeconds)
+                && between 0.9 2. (let t = time.Elapsed in t.TotalSeconds)
                 && between 4. 5. (float entries.Length) @> } // 1 api call, 2 call log entries, 1 cutoff event, maybe 1 delayed event
 
     let [<Fact>] ``CallLog - Can capture call-specific log entries isolated from overall log`` () = async {
@@ -169,9 +169,9 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let policy = Parser.parse(policy).CreatePolicy log
         let sut = Sut(log, policy)
         let! time, (Status res) = sut.ApiOneSecondSlaLog callLog Succeed (DelayS 5) |> Async.Catch |> Stopwatch.Time
-        test <@ res = 503 && between 1. 2. (let t = time.Elapsed in t.TotalSeconds) @>
+        test <@ res = 503 && between 0.9 2. (let t = time.Elapsed in t.TotalSeconds) @>
         let callEntries, statEntries = callBuffer.Take(), buffer.Take()
-        test <@ between 1. 2. (float callEntries.Length) // 1 cutoff event, maybe 1 delayed event
+        test <@ between 0.9 2. (float callEntries.Length) // 1 cutoff event, maybe 1 delayed event
                 && 3 = statEntries.Length @> } // 1 api call, 2 call log entries
 
     let [<Fact>] ``Trapping - Arbitrary Polly expressions can be used to define a failure condition`` () = async {
@@ -271,7 +271,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
             |> Async.Catch
         let! time, res = List.init 1000 alternateBetweenTwoUpstreams |> Async.Parallel |> Stopwatch.Time
         let counts = res |> Seq.countBy (function Status s -> s) |> Seq.sortBy fst |> List.ofSeq
-        test <@ match counts with [200,successCount; 503,rejectCount] -> successCount < 100 && rejectCount > 800 | x -> failwithf "%A" x @>
+        test <@ match counts with [200,successCount; 503,rejectCount] -> successCount < 200 && rejectCount > 800 | x -> failwithf "%A" x @>
         test <@ between 0.3 2.5 (let t = time.Elapsed in t.TotalSeconds) @>
     }
 

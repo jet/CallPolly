@@ -181,7 +181,7 @@ type Governor
             match config.cutoff with
             | None | Some { sla=None; dryRun=false } ->
                 return! execute
-            | Some ({ timeout=timeout; sla=sla; dryRun = dryRun } as cutoffConfig)->
+            | Some ({ timeout=timeout; sla=sla; dryRun = dryRun } as cutoffConfig) ->
                 try return! execute
                 finally
                     if not jitProcessingInterval.IsValueCreated then
