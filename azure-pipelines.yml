@@ -28,7 +28,7 @@ jobs:
       pathtoPublish: 'bin'
       artifactName: 'nupkgs'
   - task: NuGetCommand@2
-    condition: and(succeeded())
+    condition: succeeded()
     inputs:
       command: push
       nuGetFeedType: external
