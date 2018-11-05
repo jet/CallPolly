@@ -1,6 +1,5 @@
 ﻿module CallPolly.Parser
 
-open CallPolly.Rules
 open Newtonsoft.Json
 open Newtonsoft.Json.Converters.FSharp
 open System
@@ -161,17 +160,15 @@ let parseInternal defsJson : ParsedService [] =
 type Warning = { serviceName: string; callName: string; unknownRule: Newtonsoft.Json.Linq.JObject }
 
 type ParseResult(services: ParsedService[]) =
-    let mapService (x : ParsedService) : (*serviceName:*) string * ServiceConfig<_> =
-        x.serviceName,
+    let mapService (x : ParsedService) : ServiceDefinition<_> =
         {   serviceName = x.serviceName
             defaultCallName = x.defaultCallName
-            callsMap =
-                [ for call in x.calls ->
-                    let callConfig =
-                        {   policyName = call.policyName
-                            policy = call.rules |> Seq.choose (function ParsedRule.Policy x -> Some x | _ -> None) |> Config.Policy.ofInputs
-                            config = call.rules |> Seq.choose (function ParsedRule.Http x -> Some x | _ -> None) |> Config.Http.ofInputs }
-                    call.callName, callConfig ] }
+            calls = [
+                for call in x.calls ->
+                    {   callName = call.callName
+                        policyName = call.policyName
+                        rules = call.rules |> Seq.choose (function ParsedRule.Policy x -> Some x | _ -> None) |> Config.Policy.ofInputs |> List.ofSeq
+                        config = call.rules |> Seq.choose (function ParsedRule.Http x -> Some x | _ -> None) |> Config.Http.ofInputs } : CallDefinition<_> ] }
     let mapped = services |> Seq.map mapService
 
     member __.Warnings =
@@ -195,10 +192,10 @@ type ParseResult(services: ParsedService[]) =
             match createFailurePolicyBuilder with
             | None -> fun _callConfig -> Polly.Policy.Handle<TimeoutException>()
             | Some custom -> custom
-        Policy(log, createFailurePolicyBuilder, mapped)
+        PolicyBuilder(mapped).Build(log, createFailurePolicyBuilder)
 
-    member __.UpdatePolicy(x : Policy<_>) : (string * (string * ChangeLevel) list) list =
-        x.UpdateFrom mapped
+    member __.UpdatePolicy(policy : Policy<_>) : (string * (string * ChangeLevel) list) list =
+        PolicyBuilder(mapped).Update(policy)
 
 let parse defs : ParseResult =
     ParseResult(parseInternal defs)

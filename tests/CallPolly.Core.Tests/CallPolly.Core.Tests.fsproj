@@ -8,14 +8,9 @@
     <DisableImplicitSystemValueTupleReference>true</DisableImplicitSystemValueTupleReference>
   </PropertyGroup>
 
- <ItemGroup>
-    <Compile Include="..\CallPolly.Core.Tests\Infrastructure.fs" Link="Infrastructure.fs" />
-    <Compile Include="ParsingTests.fs" />
-    <Compile Include="Integration.fs" />
-  </ItemGroup>
-
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CallPolly\CallPolly.fsproj" />
+    <Compile Include="Infrastructure.fs" />
+    <Compile Include="PolicyTests.fs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -26,6 +21,10 @@
     <PackageReference Include="Unquote" Version="4.0.0" />
     <PackageReference Include="xunit" Version="2.3.1" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.3.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\CallPolly.Core\CallPolly.Core.fsproj" />
   </ItemGroup>
 
 </Project>

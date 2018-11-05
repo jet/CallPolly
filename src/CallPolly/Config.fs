@@ -49,49 +49,32 @@ module Policy =
             | Cutoff of CutoffInput
             | Isolate
 
-    [<NoComparison; RequireQualifiedAccess>]
-    [<JsonConverter(typeof<UnionConverter>, "rule")>]
-    type Rule =
-        | Break of Rules.BreakerConfig
-        | Limit of Rules.BulkheadConfig
-        | LimitBy of Rules.TaggedBulkheadConfig
-        | Cutoff of Rules.CutoffConfig
-        | Isolate
-
-    let private interpret: Input.Value -> Rule = function
-        | Input.Value.Isolate -> Rule.Isolate
+    let private interpret: Input.Value -> RuleDefinition = function
+        | Input.Value.Isolate -> RuleDefinition.Isolate
         | Input.Value.Break x ->
-            Rule.Break {
+            RuleDefinition.Break {
                 window = TimeSpan.FromSeconds (float x.windowS)
                 minThroughput = x.minRequests
                 errorRateThreshold = x.failPct/100.
                 retryAfter = TimeSpan.FromSeconds x.breakS
                 dryRun = defaultArg x.dryRun false }
         | Input.Value.Limit x ->
-            Rule.Limit {
+            RuleDefinition.Limit {
                 dop = x.maxParallel
                 queue = x.maxQueue
                 dryRun = defaultArg x.dryRun false }
         | Input.Value.LimitBy x ->
-            Rule.LimitBy {
+            RuleDefinition.LimitBy {
                 dop = x.maxParallel
                 queue = x.maxQueue
                 tag = x.tag }
         | Input.Value.Cutoff ({ timeoutMs=TimeSpanMs timeout } as x) ->
-            Rule.Cutoff {
+            RuleDefinition.Cutoff {
                 timeout = timeout
                 sla = x.slaMs |> Option.map (|TimeSpanMs|)
                 dryRun = defaultArg x.dryRun false }
 
-    let private fold : Rule seq -> Rules.PolicyConfig =
-        let folder (s : Rules.PolicyConfig) = function
-            | Rule.Isolate -> { s with isolate = true }
-            | Rule.Break breakerConfig -> { s with breaker = Some breakerConfig }
-            | Rule.Limit bulkheadConfig -> { s with limit = Some bulkheadConfig }
-            | Rule.LimitBy taggedBulkheadConfig -> { s with taggedLimits = s.taggedLimits @ [taggedBulkheadConfig] }
-            | Rule.Cutoff cutoffConfig -> { s with cutoff = Some cutoffConfig }
-        Seq.fold folder { isolate = false; cutoff = None; limit = None; taggedLimits = []; breaker = None }
-    let ofInputs xs = xs |> Seq.map interpret |> fold
+    let ofInputs xs = xs |> Seq.map interpret
 
 module Http =
     module Input =

@@ -1,10 +1,8 @@
-<Project ToolsVersion="15.0" DefaultTargets="Test;Build">
+<Project ToolsVersion="15.0">
 
   <Import Project="Directory.Build.props" />
 
   <PropertyGroup>
-
-    <Name>CallPolly</Name>
     <Cfg>--configuration Release</Cfg>
 
     <ThisDirAbsolute>$([System.IO.Path]::GetFullPath("$(MSBuildThisFileDirectory)"))</ThisDirAbsolute>
@@ -13,13 +11,15 @@
 
   </PropertyGroup>
 
-  <Target Name="Build">
-    <Exec Command="dotnet pack src/$(Name) $(Cfg) $(PackOptions)" />
+  <Target Name="Pack">
+    <Exec Command="dotnet pack src/CallPolly.Core $(Cfg) $(PackOptions)" />
+    <Exec Command="dotnet pack src/CallPolly $(Cfg) $(PackOptions)" />
   </Target>
 
-  <Target Name="Test">
-    <Exec Command="dotnet test tests/$(Name).Tests $(Cfg) $(TestOptions)" />
-    <Exec Command="dotnet test tests/$(Name).Acceptance $(Cfg) $(TestOptions)" />
+  <Target Name="VSTest">
+    <Exec Command="dotnet test CallPolly.sln $(Cfg) $(TestOptions)" />
   </Target>
+
+  <Target Name="Build" DependsOnTargets="VSTest;Pack" />
 
 </Project>

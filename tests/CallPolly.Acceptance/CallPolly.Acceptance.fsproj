@@ -9,11 +9,11 @@
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(TargetFramework)' == 'net461' ">
-    <DefineConstants>NET461</DefineConstants>
+    <DefineConstants>NETFRAMEWORK</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\CallPolly.Tests\Infrastructure.fs" Link="Infrastructure.fs" />
+    <Compile Include="..\CallPolly.Core.Tests\Infrastructure.fs" Link="Infrastructure.fs" />
     <Compile Include="Scenarios.fs" />
   </ItemGroup>
 
@@ -30,13 +30,6 @@
     <PackageReference Include="Unquote" Version="4.0.0" />
     <PackageReference Include="xunit" Version="2.3.1" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.3.1" />
-  </ItemGroup>
-
-  <!-- Workaround for https://github.com/xunit/xunit/issues/1357 -->
-  <ItemGroup>
-    <Content Include="xunit.runner.json" Condition=" '$(OS)' != 'Windows_NT' ">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
   </ItemGroup>
 
 </Project>
