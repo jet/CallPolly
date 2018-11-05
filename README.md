@@ -11,21 +11,43 @@ _Please raise GitHub issues for any questions specific to CallPolly so others ca
 ## Goals
 
 CallPolly wraps Polly to provide:
-- parsing and validation of a suite of rules in a declarative form (presently json, but being able to maintain the inputs in YAML is on the wishlist)
-- a ruleset interpreter that applies the rules in a consistent fashion
+- parsing and validation of a suite of policies, composed of rules in a declarative form (presently json, but being able to maintain the inputs in YAML and other formats is a potential avenue)
+- a policy interpreter that applies the rules in a consistent fashion
 - carefully curated metrics and logging output so it can feed into your Distributed Tracing solution, whatever it is to understand whether it's Doing What You Mean
-- the ability to iteratively refine the rules with low risk
+- the ability to iteratively refine the policies with low risk
 
 ## Non-goals
 
 - low level policy implementations should live elsewhere (see [CONTRIBUTION notes](#contribution-notes)) - _[e.g., `BulkheadMulti` needs to move out](https://github.com/App-vNext/Polly/issues/507)_
 - the core CallPolly library facilitates, but should never bind _directly_ to any specific log or metrics emission sink
 
-# Dependencies
+# Elements
 
-The core library extends [`Polly`](https://github.com/App-vNext/Polly) and is intended to support running on `netstandard2.0` and `net461`.
+The library is delivered as two `net461`/`netstandard2.0` multi-targeted assemblies:-
+
+## `CallPolly.Core`
+- extends [`Polly`](https://github.com/App-vNext/Polly) with a [`BulkheadMulti`](https://github.com/jet/CallPolly/blob/master/src/CallPolly.Core/BulkheadMulti.fs) primitive
+- In `CallPolly.Events`, defines Key events and metrics that are emitted to the [`Serilog`](https://github.com/serilog/serilog) logger.
+- In `CallPolly.Governor`, defines how rules are applied.
+- In `CallPolly.Policy`, defines policy lookups, and how live-updating policies is managed.
+
+## `CallPolly`
+
+- reads policies in a standardized format entitled `ServicePolicy` using `Jet.JsonNet.Converters`
+- maps these inputs to `CallPolly`'s inputs
 
 For reasons of code clarity and performance, a core secondary dependency is [`Serilog`](https://github.com/serilog/serilog); the pervasiveness and low dependency nature of Serilog and the [practical unlimited interop with other loggers/targets/sinks](https://github.com/serilog/serilog/wiki/Provided-Sinks) is considered enough of a win to make this a hard dependency _e.g., if your logger is NLog, it's 2 lines of code to [forward to it](https://www.nuget.org/packages/serilog.sinks.nlog) with minimal perf cost over CallPolly binding to that directly_.
+
+# Dependencies
+
+The `CallPolly.Core` library
+- extends [`Polly`](https://github.com/App-vNext/Polly) 
+- logs to [`Serilog`](https://github.com/serilog/serilog).
+- references [`Newtonsoft.Json`](https://github.com/JamesNK/Newtonsoft.Json) solely to tweak the renditions of the Policy State renditions from `DumpState` (reference is to `>= v11.0.2` is for reasons of having a clean set of dependencies for the `netstandard2.0` variant).
+
+The `CallPolly` library:
+- reads policies using [`Jet.JsonNet.Converters`](https://github.com/jet/Jet.JsonNet.Converters) and [`Newtonsoft.Json`](https://github.com/JamesNK/Newtonsoft.Json)
+- feeds those into `PolicyBuilder` in `CallPolly.Core`.
 
 Being written in F#, there's a dependency on `FSharp.Core` (v4.5 for `netstandard2.0`, or anything >= `3.1.2.5` / F# 3.1 as present in VS 2012 if you're targeting `net461`).
 

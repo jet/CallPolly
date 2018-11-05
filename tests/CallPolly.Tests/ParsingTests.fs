@@ -120,8 +120,8 @@ type PolicyParsing(output : Xunit.Abstractions.ITestOutputHelper) =
 
         let res = Parser.parse(defs).CreatePolicy log
         let limits = trap <@ res.TryFind("svc","call").Value.Policy.taggedLimits @>
-        let first : Rules.TaggedBulkheadConfig = { tag="clientDomain"; dop=3; queue=2 }
-        let second : Rules.TaggedBulkheadConfig = { tag="clientIp"; dop=2; queue=3 }
+        let first : Governor.TaggedBulkheadConfig = { tag="clientDomain"; dop=3; queue=2 }
+        let second : Governor.TaggedBulkheadConfig = { tag="clientIp"; dop=2; queue=3 }
         test <@ [ first; second ]  = limits @>
 
 /// Testing derivation of Config info

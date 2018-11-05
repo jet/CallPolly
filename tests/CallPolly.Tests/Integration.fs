@@ -1,23 +1,20 @@
-﻿namespace CallPoly.Tests.Rules
+﻿(*  NB much of this test suite has been moved and/or cloned into a more focused tests in PolicyTests.fs - in line with general test pyramid thinking, that's where as many tests as possible _should_ live.
+    This set of tests also preceded the implementation of Scenarios.fs, which to a large degree covers the need to validate from a service policy json
+      through to a call having the correct policy behaviors applied, which should remain a higher-level end to end set of tests.
+    Therefore, where coverage of a piece of logic is already addressed in either place, it's valid to remove it from here, with moving it to RulesTests being the preferred home unless it really is an end-to-end testing scenario *)
+namespace CallPoly.Tests.Integration
 
 open CallPolly
-open CallPolly.Rules
 open System
 open Swensen.Unquote
 open Xunit
-
-// shims for F# < 4, can be removed if we stop supporting that
-module private List =
-    let contains x = List.exists ((=) x)
-module private Seq =
-    let replicate n x = seq { for i in 1..n do yield x }
 
 [<AutoOpen>]
 module Helpers =
     let ms x = TimeSpan.FromMilliseconds (float x)
     let s x = TimeSpan.FromSeconds (float x)
     let between min max (value : int) = value >= min && value <= max
-    let hasChanged (serviceName : string) (call:string) (changeLevel:Rules.ChangeLevel) updated =
+    let hasChanged (serviceName : string) (call:string) (changeLevel: ChangeLevel) updated =
         updated |> List.exists (function sn,changes -> sn = serviceName && changes |> List.contains (call,changeLevel))
 
 module Core =
@@ -75,16 +72,16 @@ module Core =
     let mkPolicy value = Parser.ParsedRule.Policy value
 
     let limitParsed = mkPolicy <| Config.Policy.Input.Value.Limit { maxParallel=2; maxQueue=3; dryRun=Some true }
-    let limitConfig : Rules.BulkheadConfig = { dop=2; queue=3; dryRun=true }
+    let limitConfig : Governor.BulkheadConfig = { dop=2; queue=3; dryRun=true }
 
     let limitByParsed = mkPolicy <| Config.Policy.Input.Value.LimitBy { tag="clientIp"; maxParallel=3; maxQueue=2 }
-    let limitByConfig : Rules.TaggedBulkheadConfig = { tag="clientIp"; dop=3; queue=2  }
+    let limitByConfig : Governor.TaggedBulkheadConfig = { tag="clientIp"; dop=3; queue=2  }
 
     let breakParsed = mkPolicy <| Config.Policy.Input.Value.Break { windowS = 5; minRequests = 100; failPct=20.; breakS = 1.; dryRun = None }
-    let breakConfig : Rules.BreakerConfig = { window = s 5; minThroughput = 100; errorRateThreshold = 0.2; retryAfter = s 1; dryRun = false }
+    let breakConfig : Governor.BreakerConfig = { window = s 5; minThroughput = 100; errorRateThreshold = 0.2; retryAfter = s 1; dryRun = false }
 
     let cutoffParsed = mkPolicy <| Config.Policy.Input.Value.Cutoff { timeoutMs = 500; slaMs = None; dryRun = Some true }
-    let cutoffConfig : Rules.CutoffConfig = { timeout = ms 500; sla = None; dryRun = true }
+    let cutoffConfig : Governor.CutoffConfig = { timeout = ms 500; sla = None; dryRun = true }
 
     let isolateParsed = mkPolicy <| Config.Policy.Input.Value.Isolate
 
@@ -97,12 +94,12 @@ module Core =
         {   timeout = Some (s 5); sla = Some (s 1)
             ``base`` = Some baseUri; rel = None
             reqLog = Config.Http.LogLevel.OnlyWhenDebugEnabled; resLog = Config.Http.LogLevel.OnlyWhenDebugEnabled }
-    let noPolicy = { isolate = false; cutoff = None; limit = None; taggedLimits = []; breaker = None; }
+    let noPolicy : Governor.PolicyConfig = { isolate = false; cutoff = None; limit = None; taggedLimits = []; breaker = None; }
     let heavyConfig : Config.Http.Configuration =
         {   timeout = Some (s 10); sla = Some (s 5)
             ``base`` = None; rel = None
             reqLog = Config.Http.LogLevel.OnlyWhenDebugEnabled; resLog = Config.Http.LogLevel.OnlyWhenDebugEnabled }
-    let heavyRules = { isolate = true; cutoff = Some cutoffConfig; limit = Some limitConfig; taggedLimits = [limitByConfig]; breaker = Some breakConfig }
+    let heavyRules : Governor.PolicyConfig = { isolate = true; cutoff = Some cutoffConfig; limit = Some limitConfig; taggedLimits = [limitByConfig]; breaker = Some breakConfig }
     let mkParsedSla sla timeout = Parser.ParsedRule.Http (Config.Http.Input.Value.Sla {slaMs = sla; timeoutMs = timeout })
 
     /// Base tests exercising core functionality
@@ -147,95 +144,19 @@ module Core =
             let updated =
                 let polsWithDifferentAdddress = defs.Replace("http://base","http://base2")
                 Parser.parse(polsWithDifferentAdddress).UpdatePolicy(pol) |> List.ofSeq
-            test <@ updated |> hasChanged "default" "EstimatedDeliveryDates" Rules.ChangeLevel.Configuration
+            test <@ updated |> hasChanged "default" "EstimatedDeliveryDates" ChangeLevel.Configuration
                     && heavyPolicy.Policy.isolate @>
             let updated =
                 let polsWithIsolateMangledAndBackToOriginalBaseAddress = defs.Replace("Isolate","isolate")
                 Parser.parse(polsWithIsolateMangledAndBackToOriginalBaseAddress).UpdatePolicy pol |> List.ofSeq
-            test <@ updated |> hasChanged "default" "EstimatedDeliveryDates" Rules.ChangeLevel.Configuration
-                    && updated |> hasChanged "default" "placeOrder" Rules.ChangeLevel.Policy
+            test <@ updated |> hasChanged "default" "EstimatedDeliveryDates" ChangeLevel.Configuration
+                    && updated |> hasChanged "default" "placeOrder" ChangeLevel.Policy
                     && not heavyPolicy.Policy.isolate @>
-
-[<AutoOpen>]
-module SerilogExtractors =
-    open Serilog.Events
-
-    let (|CallPollyEvent|_|) (logEvent : LogEvent) : CallPolly.Events.Event option =
-        match logEvent.Properties.TryGetValue CallPolly.Events.Constants.EventPropertyName with
-        | true, SerilogScalar (:? CallPolly.Events.Event as e) -> Some e
-        | _ -> None
-    type StatusEvent = Pending|Resetting
-    type CallEvent = Breaking|BreakingDryRun|MaybeQueuing|SheddingDryRun|QueuingDryRun|CanceledDryRun of TimeSpan
-    type LogEvent =
-        | Isolated of service: string * call: string * policy: string
-        | Broken of service: string * call: string * policy: string
-        | Deferred of service: string * call: string * policy: string * tags: (string*string) list * duration: TimeSpan
-        | Shed of service: string * call: string * policy: string * tags: (string*string) list
-        | Breached of service: string * call: string * duration: TimeSpan
-        | Canceled of service: string * call: string * duration: TimeSpan
-        | Status of string * StatusEvent
-        | Call of string * CallEvent
-        | Other of string
-    let classify = function
-        | CallPollyEvent (Events.Event.Isolated(_service,eCall))
-            & HasProp "service" (SerilogString service)
-            & HasProp "call" (SerilogString call)
-            & HasProp "policy" (SerilogString policy)
-            when eCall = call ->
-                Isolated (service,call,policy)
-        | CallPollyEvent (Events.Event.Broken (_service,eCall,_config))
-            & HasProp "service" (SerilogString service)
-            & HasProp "call" (SerilogString call)
-            & HasProp "policy" (SerilogString policy)
-            when eCall = call ->
-                Broken (service,call,policy)
-        | TemplateContains "Pending Reopen" & HasProp "call" (SerilogString an) -> Status(an, Pending)
-        | TemplateContains "Reset" & HasProp "call" (SerilogString an) -> Status(an, Resetting)
-        | TemplateContains "Circuit Breaking " & HasProp "call" (SerilogString an) -> Call(an, Breaking)
-        | TemplateContains "Circuit DRYRUN Breaking " & HasProp "call" (SerilogString an) -> Call(an, BreakingDryRun)
-        | TemplateContains "Bulkhead Queuing likely for " & HasProp "call" (SerilogString an) -> Call(an, MaybeQueuing)
-        | TemplateContains "Bulkhead DRYRUN Queuing " & HasProp "call" (SerilogString an) -> Call(an, QueuingDryRun)
-        | TemplateContains "Bulkhead DRYRUN Shedding " & HasProp "call" (SerilogString an) -> Call(an, SheddingDryRun)
-        | CallPollyEvent (Events.Event.Deferred (_service,eCall,_tags,eInterval))
-            & HasProp "service" (SerilogString service)
-            & HasProp "call" (SerilogString call)
-            & HasProp "policy" (SerilogString policy)
-            & MaybeMap "tags" maybeTags
-            when eCall = call ->
-                Deferred (service,call,policy,maybeTags, eInterval.Elapsed)
-        | CallPollyEvent (Events.Event.Shed (_service,eCall,_tags,_config))
-            & HasProp "service" (SerilogString service)
-            & HasProp "call" (SerilogString call)
-            & HasProp "policy" (SerilogString policy)
-            & MaybeMap "tags" maybeTags
-            when eCall = call ->
-                Shed (service,call,policy,maybeTags)
-        | CallPollyEvent (Events.Event.Breached (_service,eCall,_sla,interval))
-            & HasProp "service" (SerilogString service)
-            & HasProp "call" (SerilogString call)
-            & HasProp "policy" (SerilogString _policy)
-            when eCall = call ->
-                Breached (service,call, interval.Elapsed)
-        | CallPollyEvent (Events.Event.Canceled (_service,eCall,_config,interval))
-            & HasProp "service" (SerilogString service)
-            & HasProp "call" (SerilogString call)
-            & HasProp "policy" (SerilogString _policy)
-            when eCall = call ->
-                Canceled (service,call, interval.Elapsed)
-        | TemplateContains "Cutoff DRYRUN " & TemplateContains "cancelation would have been requested on "
-            & HasProp "call" (SerilogString an)
-            & HasProp "policy" (SerilogString _policy)
-            & HasProp "durationMs" (SerilogScalar (:? float as duration)) ->
-                Call(an, CanceledDryRun(TimeSpan.FromMilliseconds duration))
-        | x -> Other (dumpEvent x)
-    type SerilogHelpers.LogCaptureBuffer with
-        member buffer.Take() =
-            [ for x in buffer.TakeBatch() -> classify x ]
 
 type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
     let log, buffer = LogHooks.createLoggerWithCapture output
 
-    let expectedLimitRules : Rules.BulkheadConfig = { dop = 2; queue = 3; dryRun = true }
+    let expectedLimitRules : Governor.BulkheadConfig = { dop = 2; queue = 3; dryRun = true }
 
     let [<Fact>] ``takes precedence over, but does not conceal Break, Limit or Timeout; logging only reflects Isolate rule`` () = async {
         let res = Parser.parse Core.defs
@@ -252,7 +173,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
         let updated =
             let polsWithIsolateMangled = Core.defs.Replace("Isolate","isolate")
             Parser.parse(polsWithIsolateMangled).UpdatePolicy pol |> List.ofSeq
-        test <@ updated |> hasChanged "default" "placeOrder" Rules.ChangeLevel.Policy
+        test <@ updated |> hasChanged "default" "placeOrder" ChangeLevel.Policy
                 && not ap.Policy.isolate @>
         let! result = ap.Execute(call) |> Async.Catch
         test <@ Choice1Of2 42 = result @>
@@ -290,7 +211,7 @@ type Isolate(output : Xunit.Abstractions.ITestOutputHelper) =
         let updated =
             let polsWithIsolateMangled = isolateDefs.Replace("Isolate","isolate")
             Parser.parse(polsWithIsolateMangled).UpdatePolicy pol |> List.ofSeq
-        test <@ updated |> hasChanged "default" "nonDefault" Rules.ChangeLevel.Policy
+        test <@ updated |> hasChanged "default" "nonDefault" ChangeLevel.Policy
                 && not ap.Policy.isolate @>
         let! result = ap.Execute(call) |> Async.Catch
         test <@ Choice1Of2 42 = result @>
@@ -310,7 +231,7 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
 }}}"""
     let dryRunDefs = defs.Replace("false","true")
 
-    let expectedRules : Rules.BreakerConfig = { window = s 10; minThroughput = 2; errorRateThreshold = 0.5; retryAfter = TimeSpan.FromSeconds 1.; dryRun = false }
+    let expectedRules : Governor.BreakerConfig = { window = s 10; minThroughput = 2; errorRateThreshold = 0.5; retryAfter = TimeSpan.FromSeconds 1.; dryRun = false }
 
     let [<Fact>] ``applies break constraints, logging each application and status changes appropriately`` () = async {
         let pol = Parser.parse(defs).CreatePolicy log
@@ -378,7 +299,7 @@ type Break(output : Xunit.Abstractions.ITestOutputHelper) =
         do! runTimeout // 3/6 failed -> break
         [Call ("(default)",BreakingDryRun)] =! buffer.Take()
         // Changing the rules should replace the breaker with a fresh instance which has forgotten the state
-        let changedRules = defs.Replace(".5","5")
+        let changedRules = defs.Replace("1.0","5")
         Parser.parse(changedRules).UpdatePolicy pol |> ignore
         do! runSuccess
         do! runSuccess
@@ -399,7 +320,7 @@ type Limit(output : Xunit.Abstractions.ITestOutputHelper) =
         }
 }}}"""
     let dryRunDefs = defs.Replace("false","true")
-    let expectedRules : Rules.BulkheadConfig = { dop = 2; queue = 3; dryRun = false }
+    let expectedRules : Governor.BulkheadConfig = { dop = 2; queue = 3; dryRun = false }
 
     let runError = async {
         do! Async.Sleep (ms 1000)
@@ -478,8 +399,8 @@ type LimitBy(output : Xunit.Abstractions.ITestOutputHelper) =
             ]
         }
 }}}"""
-    let expectedRule : Rules.TaggedBulkheadConfig = { dop = 2; queue = 3; tag="clientIp" }
-    let expectedDomainRule : Rules.TaggedBulkheadConfig = { dop = 2; queue = 3; tag="clientDomain" }
+    let expectedRule : Governor.TaggedBulkheadConfig = { dop = 2; queue = 3; tag="clientIp" }
+    let expectedDomainRule : Governor.TaggedBulkheadConfig = { dop = 2; queue = 3; tag="clientDomain" }
 
     let runOk = async {
         do! Async.Sleep (s 1)
@@ -595,7 +516,7 @@ type Cutoff(output : Xunit.Abstractions.ITestOutputHelper) =
         }
 }}}"""
     let dryRunDefs = defs.Replace("false","true")
-    let expectedRules : Rules.CutoffConfig = { timeout = ms 1000; sla = Some (ms 500); dryRun = false }
+    let expectedRules : Governor.CutoffConfig = { timeout = ms 1000; sla = Some (ms 500); dryRun = false }
 
     // Replacing sleep with Async.SleepWrong below demonstrates what a failure to honor cancellation will result in
     // (and cause the tests to fail, as the general case is that we expect a computation to honor cancelation requests

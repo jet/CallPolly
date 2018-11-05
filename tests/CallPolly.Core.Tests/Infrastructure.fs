@@ -5,6 +5,12 @@ open System
 open System.Diagnostics
 open CallPolly.Events // StopwatchInterval
 
+// shims for F# < 4, can be removed if we stop supporting that
+module private List =
+    let contains x = List.exists ((=) x)
+module private Seq =
+    let replicate n x = seq { for i in 1..n do yield x }
+
 type Async with
     static member Sleep(x : TimeSpan) = Async.Sleep(int x.TotalMilliseconds)
 
@@ -103,7 +109,7 @@ module SerilogHelpers =
             captured.Enqueue logEvent
         interface Serilog.Core.ILogEventSink with member __.Emit logEvent = capture logEvent
         member __.Clear() =
-#if NET461
+#if NETFRAMEWORK
             captured <- ConcurrentQueue()
 #else
             captured.Clear()
@@ -162,3 +168,79 @@ module LogHooks =
         let sinks = Sink capture :: Sink (TestOutputAdapter testOutputHelper) :: defaultLogOutputs
         let logger = createLoggerWithSinks sinks
         logger, capture
+
+[<AutoOpen>]
+module SerilogExtractors =
+    open Serilog.Events
+
+    let (|CallPollyEvent|_|) (logEvent : LogEvent) : CallPolly.Events.Event option =
+        match logEvent.Properties.TryGetValue CallPolly.Events.Constants.EventPropertyName with
+        | true, SerilogScalar (:? CallPolly.Events.Event as e) -> Some e
+        | _ -> None
+    type StatusEvent = Pending|Resetting
+    type CallEvent = Breaking|BreakingDryRun|MaybeQueuing|SheddingDryRun|QueuingDryRun|CanceledDryRun of TimeSpan
+    type LogEvent =
+        | Isolated of service: string * call: string * policy: string
+        | Broken of service: string * call: string * policy: string
+        | Deferred of service: string * call: string * policy: string * tags: (string*string) list * duration: TimeSpan
+        | Shed of service: string * call: string * policy: string * tags: (string*string) list
+        | Breached of service: string * call: string * duration: TimeSpan
+        | Canceled of service: string * call: string * duration: TimeSpan
+        | Status of string * StatusEvent
+        | Call of string * CallEvent
+        | Other of string
+    let classify = function
+        | CallPollyEvent (Events.Event.Isolated(_service,eCall))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
+            & HasProp "policy" (SerilogString policy)
+            when eCall = call ->
+                Isolated (service,call,policy)
+        | CallPollyEvent (Events.Event.Broken (_service,eCall,_config))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
+            & HasProp "policy" (SerilogString policy)
+            when eCall = call ->
+                Broken (service,call,policy)
+        | TemplateContains "Pending Reopen" & HasProp "call" (SerilogString an) -> Status(an, Pending)
+        | TemplateContains "Reset" & HasProp "call" (SerilogString an) -> Status(an, Resetting)
+        | TemplateContains "Circuit Breaking " & HasProp "call" (SerilogString an) -> Call(an, Breaking)
+        | TemplateContains "Circuit DRYRUN Breaking " & HasProp "call" (SerilogString an) -> Call(an, BreakingDryRun)
+        | TemplateContains "Bulkhead Queuing likely for " & HasProp "call" (SerilogString an) -> Call(an, MaybeQueuing)
+        | TemplateContains "Bulkhead DRYRUN Queuing " & HasProp "call" (SerilogString an) -> Call(an, QueuingDryRun)
+        | TemplateContains "Bulkhead DRYRUN Shedding " & HasProp "call" (SerilogString an) -> Call(an, SheddingDryRun)
+        | CallPollyEvent (Events.Event.Deferred (_service,eCall,_tags,eInterval))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
+            & HasProp "policy" (SerilogString policy)
+            & MaybeMap "tags" maybeTags
+            when eCall = call ->
+                Deferred (service,call,policy,maybeTags, eInterval.Elapsed)
+        | CallPollyEvent (Events.Event.Shed (_service,eCall,_tags,_config))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
+            & HasProp "policy" (SerilogString policy)
+            & MaybeMap "tags" maybeTags
+            when eCall = call ->
+                Shed (service,call,policy,maybeTags)
+        | CallPollyEvent (Events.Event.Breached (_service,eCall,_sla,interval))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
+            & HasProp "policy" (SerilogString _policy)
+            when eCall = call ->
+                Breached (service,call, interval.Elapsed)
+        | CallPollyEvent (Events.Event.Canceled (_service,eCall,_config,interval))
+            & HasProp "service" (SerilogString service)
+            & HasProp "call" (SerilogString call)
+            & HasProp "policy" (SerilogString _policy)
+            when eCall = call ->
+                Canceled (service,call, interval.Elapsed)
+        | TemplateContains "Cutoff DRYRUN " & TemplateContains "cancelation would have been requested on "
+            & HasProp "call" (SerilogString an)
+            & HasProp "policy" (SerilogString _policy)
+            & HasProp "durationMs" (SerilogScalar (:? float as duration)) ->
+                Call(an, CanceledDryRun(TimeSpan.FromMilliseconds duration))
+        | x -> Other (dumpEvent x)
+    type SerilogHelpers.LogCaptureBuffer with
+        member buffer.Take() =
+            [ for x in buffer.TakeBatch() -> classify x ]

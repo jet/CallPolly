@@ -1,1 +1,1 @@
-& dotnet msbuild build.proj @args
+& dotnet build build.proj @args

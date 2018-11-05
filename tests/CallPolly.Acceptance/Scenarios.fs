@@ -75,9 +75,9 @@ let policy = """{
             "policies": {
                 "default": [
                     { "rule": "Limit",  "maxParallel": 10, "maxQueue": 20 },
-                    { "rule": "LimitBy","maxParallel": 2, "maxQueue": 4, "tag": "clientIp" },
-                    { "rule": "LimitBy","maxParallel": 2, "maxQueue": 4, "tag": "clientDomain" },
-                    { "rule": "LimitBy","maxParallel": 2, "maxQueue": 4, "tag": "clientType" }
+                    { "rule": "LimitBy","maxParallel": 2, "maxQueue": 2, "tag": "clientIp" },
+                    { "rule": "LimitBy","maxParallel": 2, "maxQueue": 2, "tag": "clientDomain" },
+                    { "rule": "LimitBy","maxParallel": 2, "maxQueue": 2, "tag": "clientType" }
                 ]
             }
         }
@@ -103,7 +103,7 @@ type Act =
         | DelayS x ->       do! Async.Sleep(s x)
                             return 43 }
 
-type Sut(log : Serilog.ILogger, policy: CallPolly.Rules.Policy<_>) =
+type Sut(log : Serilog.ILogger, policy: Policy<_>) =
 
     let run serviceName callName f = policy.Find(serviceName, callName).Execute(f)
     let runLog callLog serviceName callName f = policy.Find(serviceName, callName).Execute(f, log=callLog)
@@ -202,7 +202,7 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
                 && 3 = statEntries.Length @> } // 1 api call, 2 call log entries
 
     let [<Fact>] ``Trapping - Arbitrary Polly expressions can be used to define a failure condition`` () = async {
-        let selectPolicy (cfg: CallPolly.Rules.CallConfig<Config.Http.Configuration>) =
+        let selectPolicy (cfg: CallConfig<Config.Http.Configuration>) =
             Polly.Policy
                 .Handle<TimeoutException>()
                 .Or<BadGatewayException>(fun _e ->
@@ -308,13 +308,14 @@ type Scenarios(output : Xunit.Abstractions.ITestOutputHelper) =
         let sut = Sut(log, policy)
         let act i =
             match i % 3 with
-            | 0 -> sut.ApiMulti ["clientIp","A"] (DelayMs 100)
-            | 1 -> sut.ApiMulti ["clientDomain","A"] (DelayMs 100)
-            | _ -> sut.ApiMulti ["clientType","A"] (DelayMs 100)
+            | 0 -> sut.ApiMulti ["clientIp","A"] (DelayMs 200)
+            | 1 -> sut.ApiMulti ["clientDomain","A"] (DelayMs 200)
+            | _ -> sut.ApiMulti ["clientType","A"] (DelayMs 200)
             |> Async.Catch
         let! time, res = List.init 1000 act |> Async.Parallel |> Stopwatch.Time
         let counts = res |> Seq.countBy (|Status|) |> Seq.sortBy fst |> List.ofSeq
         test <@ match counts with
+                | [ 503,rejectCount] -> rejectCount = 1000
                 | [200,successCount; 503,rejectCount] -> successCount < 40 && rejectCount >= 960
                 | x -> failwithf "%A" x @>
         test <@ between 0.3 2.5 (let t = time.Elapsed in t.TotalSeconds) @>

@@ -36,7 +36,7 @@ module private Impl =
         ingest(),tryReadUpdates
 
     open SerilogHelpers
-    let logChanges (log: ILogger) (res: (string*(string*Rules.ChangeLevel) list) list) =
+    let logChanges (log: ILogger) (res: (string*(string*ChangeLevel) list) list) =
         let xs = res |> Seq.filter (function _,c -> not (List.isEmpty c)) |> Seq.sortBy (function _,c -> -List.length c) |> Seq.cache
         if not (Seq.isEmpty xs) then
             //.ForContext("changes", seq { for s,calls in xs do for c,change in calls -> sprintf "%s:%s:%O" s c change }, true )
@@ -53,9 +53,9 @@ module Internal =
     [<NoComparison>]
     type CallPolicyInternalState =
         {   service: string; action: string; baseUri: Uri option
-            config: Rules.CallConfig<Config.Http.Configuration>; state: Rules.GovernorState }
+            config: CallConfig<Config.Http.Configuration>; state: Governor.GovernorState }
 
-type Context private (inner : Rules.Policy<_>, logChanges, tryReadUpdates) =
+type Context private (inner : Policy<_>, logChanges, tryReadUpdates) =
     static member Create(log,readDefinitions,?createFailurePolicyBuilder) =
         let initialParse,tryReadUpdates = Impl.readAndParseCycle log readDefinitions
         let inner = initialParse.CreatePolicy(log, ?createFailurePolicyBuilder=createFailurePolicyBuilder)
