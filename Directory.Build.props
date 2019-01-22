@@ -1,13 +1,12 @@
 <Project ToolsVersion="15.0">
   <PropertyGroup>
-    <VersionPrefix>0.0.7</VersionPrefix>
     <Authors>@jet @bartelink and contributors</Authors>
     <Company>Jet.com</Company>
     <Description>Apply systemwide resilience strategies consistently across subsystems, standing on Polly's shoulders</Description>
     <PackageProjectUrl>https://github.com/jet/callpolly</PackageProjectUrl>
     <PackageTags>polly bulkhead circuitbreaker timeout fsharp</PackageTags>
     <PackageLicenseUrl>https://github.com/jet/callpolly/blob/master/LICENSE</PackageLicenseUrl>
-    <Copyright>Copyright © 2018</Copyright>
+    <Copyright>Copyright © 2018-9</Copyright>
 
     <!-- SourceLink related properties https://github.com/dotnet/SourceLink#using-sourcelink -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
